@@ -1,0 +1,7 @@
+#!/bin/sh
+# Format check before commit. No-op if bun is missing so the hook never blocks
+# a commit in an environment without the toolchain.
+if ! command -v bun >/dev/null 2>&1; then
+  exit 0
+fi
+exec bun run --silent fmt:check

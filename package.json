@@ -1,0 +1,18 @@
+{
+  "name": "mandor-term",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "tauri": "tauri",
+    "dev": "tauri dev",
+    "fmt": "prettier --write ui && cargo fmt --manifest-path src-tauri/Cargo.toml",
+    "fmt:check": "prettier --check ui && cargo fmt --check --manifest-path src-tauri/Cargo.toml",
+    "prepare": "git config core.hooksPath .githooks"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "@xterm/addon-fit": "^0.11.0",
+    "@xterm/xterm": "^6.0.0",
+    "prettier": "^3.9.5"
+  }
+}

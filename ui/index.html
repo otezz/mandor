@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>mandor-term</title>
+    <link rel="stylesheet" href="vendor/xterm.css" />
+    <link rel="stylesheet" href="styles.css" />
+    <script src="vendor/xterm.js" defer></script>
+    <script src="vendor/addon-fit.js" defer></script>
+    <script src="app.js" type="module"></script>
+  </head>
+  <body>
+    <div class="window">
+      <div class="titlebar" id="titlebar">
+        <div class="titlebar-left">
+          <div class="dropdown">
+            <button
+              id="app-menu-btn"
+              class="titlebar-menu-btn"
+              type="button"
+              title="Menu"
+              aria-label="Menu"
+            >
+              <svg
+                viewBox="0 0 14 14"
+                width="15"
+                height="15"
+                aria-hidden="true"
+              >
+                <path d="M1 3.5h12M1 7h12M1 10.5h12" />
+              </svg>
+            </button>
+            <div id="app-menu" class="dropdown-menu" hidden>
+              <button type="button" data-action="new">New session</button>
+              <button type="button" data-action="resume">
+                Resume session…
+              </button>
+              <div class="dropdown-sep"></div>
+              <button type="button" data-action="quit">Quit mandor-term</button>
+            </div>
+          </div>
+          <span class="brand">mandor-term</span>
+        </div>
+        <span id="titlebar-title" class="titlebar-title"></span>
+        <div class="titlebar-controls">
+          <button
+            id="win-min"
+            class="win-btn"
+            type="button"
+            title="Minimize"
+            aria-label="Minimize"
+          >
+            <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">
+              <path d="M1 8.5h8" />
+            </svg>
+          </button>
+          <button
+            id="win-max"
+            class="win-btn"
+            type="button"
+            title="Maximize"
+            aria-label="Maximize"
+          >
+            <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">
+              <rect x="1" y="1" width="8" height="8" rx="1" fill="none" />
+            </svg>
+          </button>
+          <button
+            id="win-close"
+            class="win-btn win-close"
+            type="button"
+            title="Close to tray"
+            aria-label="Close to tray"
+          >
+            <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">
+              <path d="M1 1l8 8M9 1l-8 8" />
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <div id="app">
+        <aside id="sidebar">
+          <div class="sidebar-header">
+            <button id="new-session" type="button">+ New</button>
+            <button id="resume-session" type="button">Resume…</button>
+          </div>
+          <ul id="session-list"></ul>
+        </aside>
+        <main id="main">
+          <div id="terminals"></div>
+          <div id="empty">
+            <p>No sessions yet.</p>
+            <p class="hint">
+              Click <strong>+ New</strong> to start an interactive
+              <code>claude</code>, or <strong>Resume…</strong> a previous one.
+            </p>
+          </div>
+        </main>
+      </div>
+    </div>
+
+    <div id="resume-modal" class="modal" hidden>
+      <div class="modal-backdrop" id="resume-backdrop"></div>
+      <div class="modal-box">
+        <div class="modal-header">
+          <span>Resume a session</span>
+          <button
+            id="resume-close"
+            class="modal-close"
+            type="button"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <input
+          id="resume-filter"
+          class="modal-filter"
+          type="text"
+          placeholder="Filter by folder or message…"
+        />
+        <ul id="resume-list" class="resume-list"></ul>
+        <div id="resume-empty" class="resume-empty" hidden>
+          No sessions found.
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

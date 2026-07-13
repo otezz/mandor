@@ -1,0 +1,7 @@
+# third-party libraries, served as-is
+ui/vendor/
+
+# build output / deps
+src-tauri/target/
+node_modules/
+bun.lock
