@@ -145,8 +145,12 @@ pub fn open_pty(
                 break;
             }
         }
+        // Sole teardown site: drop the session and reap the child (avoids a
+        // zombie — the OS keeps an exited child until it's waited on).
         if let Ok(mut map) = batch_sessions.lock() {
-            map.remove(&batch_id);
+            if let Some(mut session) = map.remove(&batch_id) {
+                let _ = session.child.wait();
+            }
         }
         let _ = batch_app.emit("pty-exit", PtyExit { id: batch_id });
     });
@@ -193,12 +197,10 @@ pub fn resize_pty(state: State<PtyState>, id: String, cols: u16, rows: u16) -> R
 
 #[tauri::command]
 pub fn close_pty(state: State<PtyState>, id: String) -> Result<(), String> {
-    if let Some(mut session) = state
-        .sessions
-        .lock()
-        .map_err(|e| e.to_string())?
-        .remove(&id)
-    {
+    // Only signal: killing closes the PTY, the reader hits EOF, and the batcher
+    // thread removes the entry and reaps the child.
+    let mut map = state.sessions.lock().map_err(|e| e.to_string())?;
+    if let Some(session) = map.get_mut(&id) {
         let _ = session.child.kill();
     }
     Ok(())
