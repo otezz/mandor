@@ -36,6 +36,7 @@
               <button type="button" data-action="resume">
                 Resume session…
               </button>
+              <button type="button" data-action="group">New group</button>
               <div class="dropdown-sep"></div>
               <button type="button" data-action="quit">Quit mandor-term</button>
             </div>
@@ -85,8 +86,11 @@
           <div class="sidebar-header">
             <button id="new-session" type="button">+ New</button>
             <button id="resume-session" type="button">Resume…</button>
+            <button id="new-group" type="button" title="New group">
+              + Group
+            </button>
           </div>
-          <ul id="session-list"></ul>
+          <div id="session-list"></div>
         </aside>
         <main id="main">
           <div id="terminals"></div>

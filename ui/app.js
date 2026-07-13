@@ -2,9 +2,16 @@ const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 const appWindow = window.__TAURI__.window.getCurrentWindow();
 
-// id -> { cwd, term, fit, el, li, exited }
+// id -> { id, cwd, name, groupId, term, fit, el, exited }
 const sessions = new Map();
+const sessionOrder = []; // session ids in display order
 let activeId = null;
+
+// groups: [{ id, name, collapsed, dir }]; a session's groupId points at one.
+let groups = [];
+let ungroupedCollapsed = false;
+// { [sessionId]: { groupId, name } } — restored onto reconnected PTYs by id.
+let savedMeta = {};
 
 const listEl = document.getElementById("session-list");
 const termsEl = document.getElementById("terminals");
@@ -35,53 +42,403 @@ function xtermTheme() {
   };
 }
 
+// --- persistence (localStorage; PTY liveness is the backend's source of truth) ---
+const STORE_KEY = "mandor-term.sidebar";
+
+function persist() {
+  const sessionMeta = {};
+  for (const [id, s] of sessions) {
+    sessionMeta[id] = { groupId: s.groupId ?? null, name: s.name };
+  }
+  try {
+    localStorage.setItem(
+      STORE_KEY,
+      JSON.stringify({ groups, ungroupedCollapsed, sessionMeta }),
+    );
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function loadStore() {
+  try {
+    const data = JSON.parse(localStorage.getItem(STORE_KEY) || "{}");
+    groups = Array.isArray(data.groups) ? data.groups : [];
+    ungroupedCollapsed = !!data.ungroupedCollapsed;
+    savedMeta = data.sessionMeta || {};
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+// --- groups ---
+function autoGroupFor(cwd) {
+  if (!cwd) return null;
+  for (const g of groups) {
+    if (g.dir && (cwd === g.dir || cwd.startsWith(g.dir + "/"))) return g.id;
+  }
+  return null;
+}
+
+function uniqueGroupName(base) {
+  base = (base || "New group").trim();
+  const taken = new Set(groups.map((g) => g.name));
+  if (!taken.has(base)) return base;
+  let n = 2;
+  while (taken.has(`${base} ${n}`)) n++;
+  return `${base} ${n}`;
+}
+
+function createGroup(name = "New group", dir = null) {
+  const g = {
+    id: crypto.randomUUID(),
+    name: uniqueGroupName(name),
+    collapsed: false,
+    dir,
+  };
+  groups.push(g);
+  persist();
+  renderSessionList();
+  return g;
+}
+
+function createGroupAndRename() {
+  const g = createGroup();
+  const el = listEl.querySelector(
+    `.group-header[data-group="${g.id}"] .group-name`,
+  );
+  if (el) startRenameGroup(g, el);
+}
+
+function deleteGroup(id) {
+  const i = groups.findIndex((g) => g.id === id);
+  if (i === -1) return;
+  groups.splice(i, 1);
+  for (const s of sessions.values()) if (s.groupId === id) s.groupId = null;
+  persist();
+  renderSessionList();
+}
+
+function moveSession(id, groupId) {
+  const s = sessions.get(id);
+  if (!s) return;
+  s.groupId = groupId;
+  persist();
+  renderSessionList();
+}
+
+async function setGroupDir(g) {
+  try {
+    const dir = await invoke("plugin:dialog|open", {
+      options: {
+        directory: true,
+        title: `Auto-add sessions started under… (for "${g.name}")`,
+        defaultPath: g.dir || undefined,
+      },
+    });
+    if (dir) {
+      g.dir = typeof dir === "string" ? dir : dir?.path;
+      persist();
+      renderSessionList();
+    }
+  } catch {
+    /* cancelled */
+  }
+}
+
+// --- sidebar rendering ---
+function renderSessionList() {
+  listEl.replaceChildren();
+  const grouped = groups.length > 0;
+  const claimed = new Set();
+
+  for (const g of groups) {
+    listEl.appendChild(buildGroupHeader(g));
+    const members = sessionOrder.filter(
+      (id) => sessions.get(id)?.groupId === g.id,
+    );
+    members.forEach((id) => claimed.add(id));
+    if (!g.collapsed) {
+      for (const id of members) listEl.appendChild(buildRow(sessions.get(id)));
+    }
+  }
+
+  const ungrouped = sessionOrder.filter(
+    (id) => sessions.has(id) && !claimed.has(id),
+  );
+  if (grouped) listEl.appendChild(buildUngroupedHeader(ungrouped.length));
+  if (!grouped || !ungroupedCollapsed) {
+    for (const id of ungrouped) listEl.appendChild(buildRow(sessions.get(id)));
+  }
+}
+
+function buildGroupHeader(g) {
+  const header = document.createElement("div");
+  header.className = "group-header";
+  header.dataset.group = g.id;
+
+  const caret = document.createElement("span");
+  caret.className = "group-caret";
+  caret.textContent = g.collapsed ? "▸" : "▾";
+  const name = document.createElement("span");
+  name.className = "group-name";
+  name.textContent = g.name;
+  if (g.dir) name.title = `auto-adds sessions under ${g.dir}`;
+  const count = document.createElement("span");
+  count.className = "group-count";
+  count.textContent = String(
+    [...sessions.values()].filter((s) => s.groupId === g.id).length,
+  );
+  header.append(caret, name, count);
+
+  header.addEventListener("click", () => {
+    if (name.isContentEditable) return;
+    g.collapsed = !g.collapsed;
+    persist();
+    renderSessionList();
+  });
+  name.addEventListener("dblclick", (e) => {
+    e.stopPropagation();
+    startRenameGroup(g, name);
+  });
+  header.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openContextMenu(e, "group", g.id);
+  });
+  return header;
+}
+
+function buildUngroupedHeader(count) {
+  const header = document.createElement("div");
+  header.className = "group-header";
+  const caret = document.createElement("span");
+  caret.className = "group-caret";
+  caret.textContent = ungroupedCollapsed ? "▸" : "▾";
+  const name = document.createElement("span");
+  name.className = "group-name";
+  name.textContent = "Ungrouped";
+  const c = document.createElement("span");
+  c.className = "group-count";
+  c.textContent = String(count);
+  header.append(caret, name, c);
+  header.addEventListener("click", () => {
+    ungroupedCollapsed = !ungroupedCollapsed;
+    persist();
+    renderSessionList();
+  });
+  return header;
+}
+
+function buildRow(s) {
+  const row = document.createElement("div");
+  row.className = "session-row" + (s.id === activeId ? " active" : "");
+  row.dataset.id = s.id;
+
+  const name = document.createElement("span");
+  name.className = "s-name";
+  name.textContent = s.name + (s.exited ? " (exited)" : "");
+  name.title = s.cwd;
+  const close = document.createElement("span");
+  close.className = "s-close";
+  close.textContent = "✕";
+  close.title = "Close session";
+  row.append(name, close);
+
+  row.addEventListener("click", (e) => {
+    if (e.target === close || name.isContentEditable) return;
+    setActive(s.id);
+  });
+  close.addEventListener("click", (e) => {
+    e.stopPropagation();
+    closeSession(s.id);
+  });
+  name.addEventListener("dblclick", (e) => {
+    e.stopPropagation();
+    startRenameSession(s, name);
+  });
+  row.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openContextMenu(e, "session", s.id);
+  });
+  return row;
+}
+
+// --- inline rename (shared by sessions and groups) ---
+function editInline(el, current, commit) {
+  el.contentEditable = "true";
+  el.spellcheck = false;
+  el.focus();
+  const range = document.createRange();
+  range.selectNodeContents(el);
+  const sel = window.getSelection();
+  sel.removeAllRanges();
+  sel.addRange(range);
+
+  el.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      el.blur();
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      el.textContent = current;
+      el.blur();
+    }
+  });
+  el.addEventListener(
+    "blur",
+    () => {
+      el.contentEditable = "false";
+      const v = el.textContent.trim();
+      if (v && v !== current) commit(v);
+      renderSessionList();
+    },
+    { once: true },
+  );
+}
+
+function startRenameSession(s, el) {
+  editInline(el, s.name, (v) => {
+    s.name = v;
+    if (s.id === activeId) titleEl.textContent = v;
+    persist();
+  });
+}
+
+function startRenameGroup(g, el) {
+  editInline(el, g.name, (v) => {
+    g.name = v;
+    persist();
+  });
+}
+
+// --- right-click context menu ---
+let contextMenuEl = null;
+
+function closeContextMenu() {
+  contextMenuEl?.remove();
+  contextMenuEl = null;
+}
+
+function openContextMenu(e, kind, id) {
+  closeContextMenu();
+  const items = [];
+
+  if (kind === "session") {
+    const s = sessions.get(id);
+    if (!s) return;
+    items.push({
+      label: "Rename",
+      run: () => {
+        const el = listEl.querySelector(
+          `.session-row[data-id="${id}"] .s-name`,
+        );
+        if (el) startRenameSession(s, el);
+      },
+    });
+    items.push({ sep: true });
+    if (s.groupId != null)
+      items.push({
+        label: "Move to Ungrouped",
+        run: () => moveSession(id, null),
+      });
+    for (const g of groups) {
+      if (g.id === s.groupId) continue;
+      items.push({
+        label: `Move to ${g.name}`,
+        run: () => moveSession(id, g.id),
+      });
+    }
+    items.push({
+      label: "New group with this…",
+      run: () => {
+        const g = createGroup();
+        moveSession(id, g.id);
+      },
+    });
+    items.push({ sep: true });
+    items.push({
+      label: "Close session",
+      danger: true,
+      run: () => closeSession(id),
+    });
+  } else if (kind === "group") {
+    const g = groups.find((x) => x.id === id);
+    if (!g) return;
+    items.push({
+      label: "Rename",
+      run: () => {
+        const el = listEl.querySelector(
+          `.group-header[data-group="${id}"] .group-name`,
+        );
+        if (el) startRenameGroup(g, el);
+      },
+    });
+    items.push({
+      label: g.dir ? "Change auto-add folder…" : "Set auto-add folder…",
+      run: () => setGroupDir(g),
+    });
+    items.push({ sep: true });
+    items.push({
+      label: "Delete group",
+      danger: true,
+      run: () => deleteGroup(id),
+    });
+  } else {
+    items.push({ label: "New group", run: createGroupAndRename });
+  }
+
+  const menu = document.createElement("div");
+  menu.className = "context-menu";
+  for (const item of items) {
+    if (item.sep) {
+      const sep = document.createElement("div");
+      sep.className = "context-sep";
+      menu.appendChild(sep);
+      continue;
+    }
+    const btn = document.createElement("button");
+    btn.textContent = item.label;
+    if (item.danger) btn.className = "danger";
+    btn.addEventListener("click", () => {
+      closeContextMenu();
+      item.run();
+    });
+    menu.appendChild(btn);
+  }
+
+  document.body.appendChild(menu);
+  const rect = menu.getBoundingClientRect();
+  const x = Math.min(e.clientX, window.innerWidth - rect.width - 6);
+  const y = Math.min(e.clientY, window.innerHeight - rect.height - 6);
+  menu.style.left = `${Math.max(6, x)}px`;
+  menu.style.top = `${Math.max(6, y)}px`;
+  contextMenuEl = menu;
+}
+
+listEl.addEventListener("contextmenu", (e) => {
+  e.preventDefault();
+  openContextMenu(e, "sidebar", null);
+});
+window.addEventListener("blur", closeContextMenu);
+
 // --- session lifecycle ---
 function setActive(id) {
   activeId = id;
   for (const [sid, s] of sessions) {
-    const on = sid === id;
-    s.el.style.display = on ? "block" : "none";
-    if (s.li) s.li.classList.toggle("active", on);
+    s.el.style.display = sid === id ? "block" : "none";
+  }
+  for (const row of listEl.querySelectorAll(".session-row")) {
+    row.classList.toggle("active", row.dataset.id === id);
   }
   const s = sessions.get(id);
   emptyEl.style.display = sessions.size ? "none" : "flex";
-  titleEl.textContent = s ? baseName(s.cwd) : "";
+  titleEl.textContent = s ? s.name : "";
   if (s) {
     s.fit.fit();
     s.term.focus();
   }
-}
-
-function updateSidebarEntry(id) {
-  const s = sessions.get(id);
-  if (!s || !s.li) return;
-  s.li.classList.toggle("active", id === activeId);
-  s.li.replaceChildren();
-
-  const name = document.createElement("span");
-  name.className = "session-name";
-  name.textContent = baseName(s.cwd) + (s.exited ? " (exited)" : "");
-  name.title = s.cwd;
-
-  const close = document.createElement("button");
-  close.className = "session-close";
-  close.textContent = "×";
-  close.title = "Close session";
-  close.addEventListener("click", (e) => {
-    e.stopPropagation();
-    closeSession(id);
-  });
-
-  s.li.append(name, close);
-}
-
-function addSidebarEntry(id, session) {
-  const li = document.createElement("li");
-  li.className = "session";
-  li.addEventListener("click", () => setActive(id));
-  session.li = li;
-  listEl.appendChild(li);
-  updateSidebarEntry(id);
 }
 
 // Build the xterm + DOM + sidebar entry for a session. Does NOT open a PTY —
@@ -104,14 +461,26 @@ function createSession(id, cwd) {
   term.loadAddon(fit);
   term.open(el);
 
-  const session = { cwd, term, fit, el, li: null, exited: false };
+  const meta = savedMeta[id] || {};
+  const session = {
+    id,
+    cwd,
+    name: meta.name || baseName(cwd),
+    groupId: meta.groupId ?? autoGroupFor(cwd),
+    term,
+    fit,
+    el,
+    exited: false,
+  };
   sessions.set(id, session);
-  addSidebarEntry(id, session);
+  if (!sessionOrder.includes(id)) sessionOrder.push(id);
 
   term.onData((data) => invoke("write_pty", { id, data }).catch(() => {}));
   term.onResize(({ cols, rows }) =>
     invoke("resize_pty", { id, cols, rows }).catch(() => {}),
   );
+  renderSessionList();
+  persist();
   return session;
 }
 
@@ -130,7 +499,7 @@ async function startSession(cwd, resume) {
   } catch (e) {
     session.term.writeln(`\r\n\x1b[31mFailed to start claude: ${e}\x1b[0m`);
     session.exited = true;
-    updateSidebarEntry(id);
+    renderSessionList();
   }
 }
 
@@ -163,23 +532,28 @@ async function closeSession(id) {
   }
   s.term.dispose();
   s.el.remove();
-  s.li?.remove();
   sessions.delete(id);
+  const oi = sessionOrder.indexOf(id);
+  if (oi !== -1) sessionOrder.splice(oi, 1);
+  delete savedMeta[id];
 
   if (activeId === id) {
     activeId = null;
-    const next = sessions.keys().next().value ?? null;
+    const next = sessionOrder.find((sid) => sessions.has(sid)) ?? null;
     if (next) setActive(next);
     else {
       emptyEl.style.display = "flex";
       titleEl.textContent = "";
     }
   }
+  renderSessionList();
+  persist();
 }
 
 // Reattach to PTYs that survived a webview reload. Output routes by id (same id
 // → same terminal); the fit on activation nudges a SIGWINCH so claude repaints.
 async function reconnect() {
+  loadStore();
   let running = [];
   try {
     running = await invoke("running_ptys");
@@ -187,6 +561,11 @@ async function reconnect() {
     console.error(e);
   }
   for (const { id, cwd } of running) createSession(id, cwd);
+  const alive = new Set(running.map((r) => r.id));
+  for (const k of Object.keys(savedMeta))
+    if (!alive.has(k)) delete savedMeta[k];
+  persist();
+  renderSessionList();
   if (running.length) setActive(running[0].id);
 }
 
@@ -200,7 +579,7 @@ listen("pty-exit", ({ payload }) => {
   const s = sessions.get(payload.id);
   if (!s || s.exited) return;
   s.exited = true;
-  updateSidebarEntry(payload.id);
+  renderSessionList();
   s.term.write("\r\n\x1b[90m[claude exited]\x1b[0m\r\n");
 });
 
@@ -285,7 +664,9 @@ document
   .getElementById("resume-backdrop")
   .addEventListener("click", closeResume);
 document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape" && !resumeModal.hidden) closeResume();
+  if (e.key !== "Escape") return;
+  if (!resumeModal.hidden) closeResume();
+  closeContextMenu();
 });
 
 // --- titlebar: app menu + window controls ---
@@ -298,6 +679,7 @@ appMenuBtn.addEventListener("click", (e) => {
 });
 document.addEventListener("click", () => {
   appMenu.hidden = true;
+  closeContextMenu();
 });
 appMenu.addEventListener("click", (e) => {
   const action = e.target.closest("button")?.dataset.action;
@@ -305,6 +687,7 @@ appMenu.addEventListener("click", (e) => {
   appMenu.hidden = true;
   if (action === "new") newSession();
   else if (action === "resume") openResume();
+  else if (action === "group") createGroupAndRename();
   else if (action === "quit") invoke("quit_app");
 });
 
@@ -343,6 +726,9 @@ syncMaxIcon();
 
 document.getElementById("new-session").addEventListener("click", newSession);
 document.getElementById("resume-session").addEventListener("click", openResume);
+document
+  .getElementById("new-group")
+  .addEventListener("click", createGroupAndRename);
 invoke("is_dev").then((dev) => document.body.classList.toggle("dev", !!dev));
 
 reconnect();
