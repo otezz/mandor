@@ -751,17 +751,26 @@ function refreshBadge(s) {
   row.classList.toggle("working", bg && !!s.working && !s.attention);
 }
 
+// Only treat output→idle as "finished a turn" if it worked for at least this
+// long — avoids flagging attention for brief idle repaints (a resize redraw, a
+// status-line tick), which was making finished/idle sessions flash amber.
+const WORK_ATTENTION_MS = 1500;
+
 function markWorking(s) {
   if (!s.working) {
     s.working = true;
     s.attention = false;
+    s.workStart = Date.now();
     refreshBadge(s);
   }
   clearTimeout(s.workTimer);
   s.workTimer = setTimeout(() => {
     s.working = false;
-    if (s.id !== activeId) s.attention = true; // dot only for background sessions
-    notifyAttention(s); // but notify for any session (guarded by unfocused)
+    const worked = Date.now() - (s.workStart || Date.now());
+    if (worked >= WORK_ATTENTION_MS) {
+      if (s.id !== activeId) s.attention = true; // dot only for background
+      notifyAttention(s); // notify for any session (guarded by unfocused)
+    }
     refreshBadge(s);
   }, 900);
 }
