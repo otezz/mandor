@@ -6,8 +6,11 @@ use std::time::UNIX_EPOCH;
 use serde::Serialize;
 use serde_json::Value;
 
-/// Newest transcripts to inspect — mirrors `cs`'s CS_SCAN_LIMIT.
-const SCAN_LIMIT: usize = 120;
+/// Newest transcripts to inspect. `cs` capped this at 120 for fzf speed, but the
+/// GUI picker can afford more — the scan only reads each file's head, off-thread,
+/// when the picker opens. Sessions older than the newest `SCAN_LIMIT` by mtime
+/// won't appear (use the filter box to narrow what does).
+const SCAN_LIMIT: usize = 500;
 /// Transcript header lines to read when extracting cwd + first message.
 const HEAD_LINES: usize = 80;
 const PREVIEW_CHARS: usize = 100;

@@ -2,7 +2,17 @@ const { invoke } = window.__TAURI__.core;
 const { listen } = window.__TAURI__.event;
 const appWindow = window.__TAURI__.window.getCurrentWindow();
 
-// id -> { id, cwd, name, groupId, term, fit, el, exited }
+// A pop-out window shows a single session's terminal (?popout=1&id=…). It shares
+// the backend + localStorage with the main window, so it must NOT persist.
+const POPOUT = new URLSearchParams(location.search).get("popout") === "1";
+const POPOUT_ID = new URLSearchParams(location.search).get("id");
+if (POPOUT) document.body.classList.add("popout");
+
+// id -> session record. id === the claude session id (forced via --session-id),
+// so a session can be resumed after a full app restart.
+// record: { id, cwd, name, groupId, spawnMode, wantWorktree, live, exited,
+//           term, fit, el }. term/fit/el are null until the session is
+//           "materialized" (a live PTY reconnected, or a cold one resumed).
 const sessions = new Map();
 const sessionOrder = []; // session ids in display order
 let activeId = null;
@@ -10,8 +20,20 @@ let activeId = null;
 // groups: [{ id, name, collapsed, dir }]; a session's groupId points at one.
 let groups = [];
 let ungroupedCollapsed = false;
-// { [sessionId]: { groupId, name } } — restored onto reconnected PTYs by id.
-let savedMeta = {};
+let savedSessions = []; // persisted session records, restored on launch
+let recentDirs = []; // recently-used session directories, most recent first
+let sidebarCollapsed = false;
+let appFocused = true;
+let notificationsEnabled = true;
+let settings = {
+  theme: "auto",
+  defaultCwd: "",
+  claudePath: "",
+  notifications: true,
+  defaultModel: "",
+  terminalFontSize: 13,
+  remoteByDefault: false,
+};
 
 const listEl = document.getElementById("session-list");
 const termsEl = document.getElementById("terminals");
@@ -46,14 +68,27 @@ function xtermTheme() {
 const STORE_KEY = "mandor-term.sidebar";
 
 function persist() {
-  const sessionMeta = {};
-  for (const [id, s] of sessions) {
-    sessionMeta[id] = { groupId: s.groupId ?? null, name: s.name };
-  }
+  if (POPOUT) return; // the main window owns persistence
+  const sess = sessionOrder
+    .map((id) => sessions.get(id))
+    .filter(Boolean)
+    .map((s) => ({
+      id: s.id,
+      cwd: s.cwd,
+      name: s.name,
+      groupId: s.groupId ?? null,
+    }));
   try {
     localStorage.setItem(
       STORE_KEY,
-      JSON.stringify({ groups, ungroupedCollapsed, sessionMeta }),
+      JSON.stringify({
+        groups,
+        ungroupedCollapsed,
+        recentDirs,
+        sidebarCollapsed,
+        settings,
+        sessions: sess,
+      }),
     );
   } catch (e) {
     console.error(e);
@@ -65,10 +100,22 @@ function loadStore() {
     const data = JSON.parse(localStorage.getItem(STORE_KEY) || "{}");
     groups = Array.isArray(data.groups) ? data.groups : [];
     ungroupedCollapsed = !!data.ungroupedCollapsed;
-    savedMeta = data.sessionMeta || {};
+    recentDirs = Array.isArray(data.recentDirs) ? data.recentDirs : [];
+    sidebarCollapsed = !!data.sidebarCollapsed;
+    if (data.settings && typeof data.settings === "object")
+      settings = { ...settings, ...data.settings };
+    savedSessions = Array.isArray(data.sessions) ? data.sessions : [];
   } catch (e) {
     console.error(e);
   }
+}
+
+function addRecentDir(dir) {
+  const i = recentDirs.indexOf(dir);
+  if (i !== -1) recentDirs.splice(i, 1);
+  recentDirs.unshift(dir);
+  if (recentDirs.length > 12) recentDirs.length = 12;
+  persist();
 }
 
 // --- groups ---
@@ -192,7 +239,7 @@ function buildGroupHeader(g) {
   header.append(caret, name, count);
 
   header.addEventListener("click", () => {
-    if (name.isContentEditable) return;
+    if (justDragged || name.isContentEditable) return;
     g.collapsed = !g.collapsed;
     persist();
     renderSessionList();
@@ -206,6 +253,9 @@ function buildGroupHeader(g) {
     e.stopPropagation();
     openContextMenu(e, "group", g.id);
   });
+  header.addEventListener("mousedown", (e) =>
+    dragStart(e, "group", g.id, header),
+  );
   return header;
 }
 
@@ -232,26 +282,32 @@ function buildUngroupedHeader(count) {
 
 function buildRow(s) {
   const row = document.createElement("div");
-  row.className = "session-row" + (s.id === activeId ? " active" : "");
+  row.className = "session-row";
+  if (s.id === activeId) row.classList.add("active");
+  if (s.exited) row.classList.add("exited");
+  else if (!s.live) row.classList.add("cold"); // restored, not yet resumed
+  if (s.attention) row.classList.add("has-attention");
   row.dataset.id = s.id;
 
+  const badge = document.createElement("span");
+  badge.className = "s-badge"; // attention dot (shown via .has-attention)
   const name = document.createElement("span");
   name.className = "s-name";
   name.textContent = s.name + (s.exited ? " (exited)" : "");
-  name.title = s.cwd;
+  name.title = !s.live && !s.exited ? `${s.cwd} — click to resume` : s.cwd;
   const close = document.createElement("span");
   close.className = "s-close";
   close.textContent = "✕";
   close.title = "Close session";
-  row.append(name, close);
+  row.append(badge, name, close);
 
   row.addEventListener("click", (e) => {
-    if (e.target === close || name.isContentEditable) return;
+    if (justDragged || e.target === close || name.isContentEditable) return;
     setActive(s.id);
   });
   close.addEventListener("click", (e) => {
     e.stopPropagation();
-    closeSession(s.id);
+    requestClose(s.id);
   });
   name.addEventListener("dblclick", (e) => {
     e.stopPropagation();
@@ -262,7 +318,154 @@ function buildRow(s) {
     e.stopPropagation();
     openContextMenu(e, "session", s.id);
   });
+  row.addEventListener("mousedown", (e) => dragStart(e, "session", s.id, row));
   return row;
+}
+
+// --- drag-to-reorder (pointer-based; Tauri disables HTML5 drag events) ---
+let drag = null; // { kind, id, startY, el, moved }
+let justDragged = false; // set on drop so the ensuing click doesn't select/toggle
+
+function dragStart(e, kind, id, el) {
+  if (
+    e.button !== 0 ||
+    e.target.closest(".s-close") ||
+    e.target.isContentEditable
+  )
+    return;
+  justDragged = false;
+  drag = { kind, id, startY: e.clientY, el, moved: false };
+}
+
+function clearDropMarks() {
+  for (const el of listEl.querySelectorAll(
+    ".drop-before, .drop-after, .drop-into",
+  ))
+    el.classList.remove("drop-before", "drop-after", "drop-into");
+}
+
+// The group header element for a group id (null = the Ungrouped header).
+function groupHeaderEl(groupId) {
+  if (groupId)
+    return listEl.querySelector(`.group-header[data-group="${groupId}"]`);
+  return [...listEl.querySelectorAll(".group-header")].find(
+    (h) => !h.dataset.group,
+  );
+}
+
+// The sidebar item under a y coordinate, and whether to drop before or after it.
+function dropTarget(y) {
+  const items = [...listEl.querySelectorAll(".session-row, .group-header")];
+  for (const el of items) {
+    const r = el.getBoundingClientRect();
+    if (y < r.top + r.height / 2) return { el, before: true };
+  }
+  const last = items[items.length - 1];
+  return last ? { el: last, before: false } : null;
+}
+
+document.addEventListener("mousemove", (e) => {
+  if (!drag) return;
+  if (!drag.moved) {
+    if (Math.abs(e.clientY - drag.startY) < 4) return;
+    drag.moved = true;
+    document.body.classList.add("dragging");
+    drag.el.classList.add("drag-src");
+  }
+  clearDropMarks();
+  const t = dropTarget(e.clientY);
+  if (!t || t.el === drag.el) return;
+
+  const onHeader = t.el.classList.contains("group-header");
+  if (drag.kind === "session" && onHeader) {
+    // Dropping on a header means "into this group" — ring only, no line
+    // (avoids a doubled top line where the ring meets the drop line).
+    groupHeaderEl(targetGroupId(t))?.classList.add("drop-into");
+    return;
+  }
+  t.el.classList.add(t.before ? "drop-before" : "drop-after");
+  // A session landing among another group's rows: also highlight that group.
+  if (drag.kind === "session") {
+    const s = sessions.get(drag.id);
+    const tg = targetGroupId(t);
+    if (s && (s.groupId ?? null) !== tg)
+      groupHeaderEl(tg)?.classList.add("drop-into");
+  }
+});
+
+document.addEventListener("mouseup", (e) => {
+  if (!drag) return;
+  const d = drag;
+  drag = null;
+  document.body.classList.remove("dragging");
+  d.el.classList.remove("drag-src");
+  clearDropMarks();
+  if (!d.moved) return; // a plain click; let the click handler run
+  justDragged = true;
+  const t = dropTarget(e.clientY);
+  if (t) {
+    if (d.kind === "session") dropSession(d.id, t);
+    else dropGroup(d.id, t);
+  }
+});
+
+// WebKitGTK ignores `user-select: none` alone here — also block selectstart in
+// the sidebar (except while renaming, where the target may be a text node).
+document.getElementById("sidebar").addEventListener("selectstart", (e) => {
+  const node = e.target;
+  const el = node.nodeType === 1 ? node : node.parentElement;
+  if (el?.closest('[contenteditable="true"]')) return;
+  e.preventDefault();
+});
+
+// The group a drop target belongs to ("" header → null / Ungrouped).
+function targetGroupId(t) {
+  if (t.el.classList.contains("group-header"))
+    return t.el.dataset.group || null;
+  const ts = sessions.get(t.el.dataset.id);
+  return ts ? (ts.groupId ?? null) : null;
+}
+
+function dropSession(id, t) {
+  const s = sessions.get(id);
+  if (!s) return;
+  if (!t.el.classList.contains("group-header") && t.el.dataset.id === id)
+    return;
+  s.groupId = targetGroupId(t);
+  const oi = sessionOrder.indexOf(id);
+  if (oi !== -1) sessionOrder.splice(oi, 1);
+
+  if (t.el.classList.contains("group-header")) {
+    // top of that group (or end if empty)
+    const first = sessionOrder.findIndex(
+      (x) => (sessions.get(x)?.groupId ?? null) === s.groupId,
+    );
+    if (first === -1) sessionOrder.push(id);
+    else sessionOrder.splice(first, 0, id);
+  } else {
+    let ai = sessionOrder.indexOf(t.el.dataset.id);
+    if (ai === -1) ai = sessionOrder.length - 1;
+    else if (!t.before) ai += 1;
+    sessionOrder.splice(ai, 0, id);
+  }
+  persist();
+  renderSessionList();
+}
+
+function dropGroup(id, t) {
+  const from = groups.findIndex((g) => g.id === id);
+  if (from === -1) return;
+  const targetGid = targetGroupId(t);
+  const [g] = groups.splice(from, 1);
+  let to = groups.findIndex((x) => x.id === targetGid);
+  if (to === -1)
+    groups.push(g); // dropped in the Ungrouped area → last
+  else {
+    if (!t.before) to += 1;
+    groups.splice(to, 0, g);
+  }
+  persist();
+  renderSessionList();
 }
 
 // --- inline rename (shared by sessions and groups) ---
@@ -337,6 +540,7 @@ function openContextMenu(e, kind, id) {
         if (el) startRenameSession(s, el);
       },
     });
+    items.push({ label: "Open in new window", run: () => popOutSession(id) });
     items.push({ sep: true });
     if (s.groupId != null)
       items.push({
@@ -361,11 +565,13 @@ function openContextMenu(e, kind, id) {
     items.push({
       label: "Close session",
       danger: true,
-      run: () => closeSession(id),
+      run: () => requestClose(id),
     });
   } else if (kind === "group") {
     const g = groups.find((x) => x.id === id);
     if (!g) return;
+    items.push({ label: "New session here", run: () => openNewSession(id) });
+    items.push({ sep: true });
     items.push({
       label: "Rename",
       run: () => {
@@ -424,34 +630,39 @@ listEl.addEventListener("contextmenu", (e) => {
 window.addEventListener("blur", closeContextMenu);
 
 // --- session lifecycle ---
-function setActive(id) {
-  activeId = id;
-  for (const [sid, s] of sessions) {
-    s.el.style.display = sid === id ? "block" : "none";
-  }
-  for (const row of listEl.querySelectorAll(".session-row")) {
-    row.classList.toggle("active", row.dataset.id === id);
-  }
-  const s = sessions.get(id);
-  emptyEl.style.display = sessions.size ? "none" : "flex";
-  titleEl.textContent = s ? s.name : "";
-  if (s) {
-    s.fit.fit();
-    s.term.focus();
-  }
+
+// Register a session record (no terminal, no PTY yet).
+function addSession(rec) {
+  const s = {
+    id: rec.id,
+    cwd: rec.cwd,
+    name: rec.name || baseName(rec.cwd),
+    groupId: rec.groupId ?? null,
+    spawnMode: rec.spawnMode || "resume", // how to spawn when materialized
+    wantWorktree: !!rec.wantWorktree,
+    wantModel: rec.wantModel || "",
+    wantRemote: !!rec.wantRemote,
+    live: !!rec.live, // a PTY is running for this session
+    exited: false,
+    term: null,
+    fit: null,
+    el: null,
+  };
+  sessions.set(s.id, s);
+  if (!sessionOrder.includes(s.id)) sessionOrder.push(s.id);
+  return s;
 }
 
-// Build the xterm + DOM + sidebar entry for a session. Does NOT open a PTY —
-// callers open (new/resume) or reconnect to an already-running one.
-function createSession(id, cwd) {
+// Give a session an xterm + DOM node (kept detached until activated).
+function attachTerminal(s) {
+  if (s.term) return;
   const el = document.createElement("div");
   el.className = "terminal-host";
   el.style.display = "none";
   termsEl.appendChild(el);
-
   const term = new Terminal({
     fontFamily: "'JetBrains Mono', 'Fira Code', ui-monospace, monospace",
-    fontSize: 13,
+    fontSize: settings.terminalFontSize || 13,
     cursorBlink: true,
     scrollback: 5000,
     allowProposedApi: true,
@@ -460,82 +671,174 @@ function createSession(id, cwd) {
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(el);
-
-  const meta = savedMeta[id] || {};
-  const session = {
-    id,
-    cwd,
-    name: meta.name || baseName(cwd),
-    groupId: meta.groupId ?? autoGroupFor(cwd),
-    term,
-    fit,
-    el,
-    exited: false,
-  };
-  sessions.set(id, session);
-  if (!sessionOrder.includes(id)) sessionOrder.push(id);
-
-  term.onData((data) => invoke("write_pty", { id, data }).catch(() => {}));
-  term.onResize(({ cols, rows }) =>
-    invoke("resize_pty", { id, cols, rows }).catch(() => {}),
+  s.term = term;
+  s.fit = fit;
+  s.el = el;
+  term.onData((data) =>
+    invoke("write_pty", { id: s.id, data }).catch(() => {}),
   );
-  renderSessionList();
-  persist();
-  return session;
+  term.onResize(({ cols, rows }) =>
+    invoke("resize_pty", { id: s.id, cols, rows }).catch(() => {}),
+  );
+  // claude rings the terminal bell when a turn finishes / it needs input.
+  // (optional-chained: guard against older xterm builds without onBell)
+  term.onBell?.(() => onAttention(s));
 }
 
-async function startSession(cwd, resume) {
-  const id = crypto.randomUUID();
-  const session = createSession(id, cwd);
-  setActive(id);
-  try {
-    await invoke("open_pty", {
-      id,
-      cwd,
-      cols: session.term.cols,
-      rows: session.term.rows,
-      resume: resume ?? null,
-    });
-  } catch (e) {
-    session.term.writeln(`\r\n\x1b[31mFailed to start claude: ${e}\x1b[0m`);
-    session.exited = true;
-    renderSessionList();
+// A session wants attention (bell): flag its sidebar row when it's in the
+// background, and notify if the window is unfocused.
+function onAttention(s) {
+  if (s.id !== activeId) {
+    s.attention = true;
+    const row = listEl.querySelector(`.session-row[data-id="${s.id}"]`);
+    if (row) row.classList.add("has-attention");
+    else renderSessionList();
+  }
+  if (!appFocused && notificationsEnabled) {
+    invoke("notify", {
+      title: s.name,
+      body: "Claude needs your attention",
+    }).catch(() => {});
   }
 }
 
-async function newSession() {
-  let cwd;
+// Spawn the PTY for a materialized session. `new` forces a fresh session id
+// (so it's resumable later); otherwise resume the existing conversation.
+async function spawnSession(s) {
+  if (s.live) return;
+  s.live = true;
+  const args = {
+    id: s.id,
+    cwd: s.cwd,
+    cols: s.term.cols,
+    rows: s.term.rows,
+    resume: null,
+    sessionId: null,
+    name: null,
+    worktree: false,
+    model: null,
+    remoteControl: false,
+  };
+  if (s.spawnMode === "new") {
+    args.sessionId = s.id;
+    args.name = s.name;
+    args.worktree = s.wantWorktree;
+    args.model = s.wantModel || null;
+    args.remoteControl = !!s.wantRemote;
+  } else {
+    args.resume = s.id;
+  }
+  s.spawnMode = "resume"; // any later respawn resumes
   try {
-    cwd = await invoke("plugin:dialog|open", {
-      options: {
-        directory: true,
-        multiple: false,
-        title: "New claude session in…",
-      },
-    });
+    await invoke("open_pty", args);
   } catch (e) {
-    console.error(e);
+    s.term.writeln(`\r\n\x1b[31mFailed to start claude: ${e}\x1b[0m`);
+    s.exited = true;
+    s.live = false;
+  }
+  renderSessionList();
+}
+
+function setActive(id) {
+  const s = sessions.get(id);
+  activeId = id;
+  if (s) s.attention = false; // viewing it clears any attention flag
+  // Materialize a cold session (restored across restart) on first activation.
+  if (s && !s.term && !s.exited) attachTerminal(s);
+  for (const [sid, x] of sessions) {
+    if (x.el) x.el.style.display = sid === id ? "block" : "none";
+  }
+  for (const row of listEl.querySelectorAll(".session-row")) {
+    row.classList.toggle("active", row.dataset.id === id);
+  }
+  emptyEl.style.display = sessions.size ? "none" : "flex";
+  titleEl.textContent = s ? s.name : "";
+  if (s && s.term) {
+    s.fit.fit(); // size before spawn so the PTY opens at the right dimensions
+    s.term.focus();
+  }
+  if (s && s.needsRepaint && s.live) {
+    s.needsRepaint = false;
+    nudgeRepaint(s);
+  }
+  if (s && !s.live && !s.exited && s.term) spawnSession(s);
+}
+
+// After reconnecting to a live PTY (webview reload) the fresh xterm is empty and
+// claude only redraws on an actual size change — but the window size is
+// unchanged across a reload, so a plain resize is a no-op. Briefly jiggle the
+// PTY size (rows-1 → rows, spaced out) to force claude to reflow and repaint.
+// Deferred so the output listener and layout are ready to catch the redraw.
+function nudgeRepaint(s) {
+  setTimeout(() => {
+    if (!s.live || !s.term) return;
+    const { cols, rows } = s.term;
+    if (rows < 2) return;
+    invoke("resize_pty", { id: s.id, cols, rows: rows - 1 })
+      .then(() =>
+        new Promise((r) => setTimeout(r, 40)).then(() =>
+          invoke("resize_pty", { id: s.id, cols, rows }),
+        ),
+      )
+      .catch(() => {});
+  }, 120);
+}
+
+// New session (modal) or resume (picker/restore). opts:
+// { resume?, name?, groupId?, worktree? }. On resume, opts.resume is the claude
+// session id and becomes this session's id.
+function startSession(cwd, opts = {}) {
+  const isResume = !!opts.resume;
+  const id = isResume ? opts.resume : crypto.randomUUID();
+  if (sessions.has(id)) {
+    setActive(id); // already open — just focus it (also de-dupes resume)
     return;
   }
-  if (!cwd) return;
-  cwd = typeof cwd === "string" ? cwd : cwd.path;
-  await startSession(cwd, null);
+  addSession({
+    id,
+    cwd,
+    name: opts.name,
+    groupId: "groupId" in opts ? opts.groupId : autoGroupFor(cwd),
+    spawnMode: isResume ? "resume" : "new",
+    wantWorktree: opts.worktree,
+    wantModel: opts.model,
+    wantRemote: opts.remoteControl,
+    live: false,
+  });
+  renderSessionList();
+  persist();
+  setActive(id); // attaches, sizes, and spawns
+}
+
+// Open a session in its own window. The main window then switches away from it
+// so it doesn't fight the pop-out over the shared PTY's size.
+function popOutSession(id) {
+  const s = sessions.get(id);
+  if (!s) return;
+  invoke("open_session_window", { id, name: s.name }).catch((e) =>
+    console.error(e),
+  );
+  if (activeId === id) {
+    const next = sessionOrder.find((sid) => sid !== id && sessions.has(sid));
+    if (next) setActive(next);
+  }
 }
 
 async function closeSession(id) {
   const s = sessions.get(id);
   if (!s) return;
-  try {
-    await invoke("close_pty", { id });
-  } catch (e) {
-    console.error(e);
+  if (s.live) {
+    try {
+      await invoke("close_pty", { id });
+    } catch (e) {
+      console.error(e);
+    }
   }
-  s.term.dispose();
-  s.el.remove();
+  if (s.term) s.term.dispose();
+  if (s.el) s.el.remove();
   sessions.delete(id);
   const oi = sessionOrder.indexOf(id);
   if (oi !== -1) sessionOrder.splice(oi, 1);
-  delete savedMeta[id];
 
   if (activeId === id) {
     activeId = null;
@@ -550,50 +853,437 @@ async function closeSession(id) {
   persist();
 }
 
-// Reattach to PTYs that survived a webview reload. Output routes by id (same id
-// → same terminal); the fit on activation nudges a SIGWINCH so claude repaints.
-async function reconnect() {
+// On launch: reconnect to PTYs that survived a webview reload, and restore
+// persisted sessions from a full restart as cold entries (resumed on click).
+async function restore() {
   loadStore();
+  applySidebarCollapsed();
+  applySettings();
   let running = [];
   try {
     running = await invoke("running_ptys");
   } catch (e) {
     console.error(e);
   }
-  for (const { id, cwd } of running) createSession(id, cwd);
-  const alive = new Set(running.map((r) => r.id));
-  for (const k of Object.keys(savedMeta))
-    if (!alive.has(k)) delete savedMeta[k];
-  persist();
+  const liveIds = new Set(running.map((r) => r.id));
+
+  for (const rec of savedSessions) {
+    if (sessions.has(rec.id)) continue;
+    addSession({ ...rec, spawnMode: "resume", live: liveIds.has(rec.id) });
+  }
+  // Live PTYs missing from storage (e.g. storage cleared, backend survived).
+  for (const { id, cwd } of running) {
+    if (sessions.has(id)) continue;
+    addSession({
+      id,
+      cwd,
+      name: baseName(cwd),
+      groupId: autoGroupFor(cwd),
+      spawnMode: "resume",
+      live: true,
+    });
+  }
+  // Attach terminals to live sessions now so their PTY output isn't dropped;
+  // mark them for a repaint nudge on activation (claude lost the reloaded view).
+  for (const id of sessionOrder) {
+    const s = sessions.get(id);
+    if (s.live && !s.term) {
+      attachTerminal(s);
+      s.needsRepaint = true;
+    }
+  }
   renderSessionList();
-  if (running.length) setActive(running[0].id);
+  persist();
+  // Prefer a live session (reload) over resuming a cold one; fall back to the
+  // first cold session (full restart) so the last work resumes automatically.
+  const first =
+    sessionOrder.find((id) => sessions.get(id)?.live) ??
+    sessionOrder.find((id) => sessions.has(id));
+  if (first) setActive(first);
+}
+
+// Pop-out window: render just the one session, reconnected to its running PTY.
+async function runPopout() {
+  applySettings();
+  let running = [];
+  try {
+    running = await invoke("running_ptys");
+  } catch (e) {
+    console.error(e);
+  }
+  const info = running.find((r) => r.id === POPOUT_ID);
+  const s = addSession({
+    id: POPOUT_ID,
+    cwd: info ? info.cwd : "",
+    name: info ? baseName(info.cwd) : "session",
+    groupId: null,
+    spawnMode: "resume",
+    live: !!info,
+  });
+  attachTerminal(s);
+  setActive(POPOUT_ID);
 }
 
 // --- PTY event routing ---
 listen("pty-output", ({ payload }) => {
   const s = sessions.get(payload.id);
-  if (s) s.term.write(base64ToBytes(payload.b64));
+  if (s && s.term) s.term.write(base64ToBytes(payload.b64));
 });
 
 listen("pty-exit", ({ payload }) => {
   const s = sessions.get(payload.id);
   if (!s || s.exited) return;
   s.exited = true;
+  s.live = false;
   renderSessionList();
-  s.term.write("\r\n\x1b[90m[claude exited]\x1b[0m\r\n");
+  if (s.term) s.term.write("\r\n\x1b[90m[claude exited]\x1b[0m\r\n");
 });
 
 const resizeObserver = new ResizeObserver(() => {
   const s = sessions.get(activeId);
-  if (s) s.fit.fit();
+  if (s && s.fit) s.fit.fit();
 });
 resizeObserver.observe(termsEl);
 
 const schemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
 schemeQuery.addEventListener("change", () => {
   const theme = xtermTheme();
-  for (const s of sessions.values()) s.term.options.theme = theme;
+  for (const s of sessions.values()) if (s.term) s.term.options.theme = theme;
 });
+
+// --- new-session modal ---
+const newModal = document.getElementById("new-modal");
+const nsName = document.getElementById("ns-name");
+const nsWorktree = document.getElementById("ns-worktree");
+const nsRemote = document.getElementById("ns-remote");
+const nsCwdLabel = document.getElementById("ns-cwd-label");
+const nsCwdPath = document.getElementById("ns-cwd-path");
+const nsCwdMenu = document.getElementById("ns-cwd-menu");
+const nsGroupLabel = document.getElementById("ns-group-label");
+const nsGroupMenu = document.getElementById("ns-group-menu");
+const nsModelLabel = document.getElementById("ns-model-label");
+const nsModelMenu = document.getElementById("ns-model-menu");
+const nsExistingWrap = document.getElementById("ns-existing-wrap");
+const nsExistingList = document.getElementById("ns-existing-list");
+const nsExistingFilter = document.getElementById("ns-existing-filter");
+let nsSessions = []; // all resumable sessions, filtered by the picked folder
+let nsSessionsLoaded = false;
+const MODEL_OPTIONS = [
+  { value: "", label: "Default" },
+  { value: "opus", label: "Opus" },
+  { value: "sonnet", label: "Sonnet" },
+  { value: "haiku", label: "Haiku" },
+];
+let newSessionModel = "";
+let newSessionCwd = "";
+let newSessionGroup = ""; // "" = Ungrouped
+let nsNameEdited = false;
+
+function setCwdLabel() {
+  if (newSessionCwd) {
+    nsCwdLabel.textContent = baseName(newSessionCwd);
+    nsCwdLabel.title = newSessionCwd;
+    nsCwdLabel.classList.remove("placeholder");
+    nsCwdPath.textContent = newSessionCwd;
+  } else {
+    nsCwdLabel.textContent = "Choose a folder…";
+    nsCwdLabel.removeAttribute("title");
+    nsCwdLabel.classList.add("placeholder");
+    nsCwdPath.textContent = "";
+  }
+}
+
+function setGroupLabel() {
+  const g = newSessionGroup && groups.find((x) => x.id === newSessionGroup);
+  nsGroupLabel.textContent = g ? g.name : "Ungrouped";
+}
+
+function modelLabelFor(value) {
+  return (MODEL_OPTIONS.find((o) => o.value === value) || MODEL_OPTIONS[0])
+    .label;
+}
+
+function setModelLabel() {
+  nsModelLabel.textContent = modelLabelFor(newSessionModel);
+}
+
+function buildModelMenu() {
+  nsModelMenu.replaceChildren();
+  for (const o of MODEL_OPTIONS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className =
+      "ns-menu-item" + (newSessionModel === o.value ? " current" : "");
+    b.textContent = o.label;
+    b.addEventListener("click", () => {
+      newSessionModel = o.value;
+      setModelLabel();
+      closeNsMenus();
+    });
+    nsModelMenu.appendChild(b);
+  }
+}
+
+function suggestName() {
+  if (!nsNameEdited)
+    nsName.value = newSessionCwd ? baseName(newSessionCwd) : "";
+}
+
+function closeNsMenus() {
+  nsCwdMenu.hidden = true;
+  nsGroupMenu.hidden = true;
+  nsModelMenu.hidden = true;
+}
+
+function toggleNsMenu(menu, build) {
+  const willOpen = menu.hidden;
+  closeNsMenus();
+  if (willOpen) {
+    build();
+    menu.hidden = false;
+  }
+}
+
+function selectCwd(dir) {
+  newSessionCwd = dir;
+  // reflect the group whose configured dir matches (same rule as auto-grouping),
+  // unless the user already picked one explicitly
+  if (!newSessionGroup) {
+    newSessionGroup = autoGroupFor(dir) || "";
+    setGroupLabel();
+  }
+  setCwdLabel();
+  suggestName();
+  nsExistingFilter.value = "";
+  renderNsExisting();
+  closeNsMenus();
+}
+
+function nsExistingNote(text) {
+  const li = document.createElement("li");
+  li.className = "nse-empty";
+  li.textContent = text;
+  nsExistingList.appendChild(li);
+}
+
+// Show resumable sessions whose cwd is the picked folder or nested under it.
+// Visible whenever a folder is selected; shows a note when there are none.
+function renderNsExisting() {
+  nsExistingList.replaceChildren();
+  const cwd = newSessionCwd;
+  if (!cwd) {
+    nsExistingWrap.hidden = true;
+    return;
+  }
+  nsExistingWrap.hidden = false;
+
+  const scoped = nsSessions.filter(
+    (s) => s.cwd === cwd || s.cwd.startsWith(cwd + "/"),
+  );
+  if (!nsSessionsLoaded) {
+    nsExistingFilter.hidden = true;
+    nsExistingNote("Loading…");
+    return;
+  }
+  if (!scoped.length) {
+    nsExistingFilter.hidden = true;
+    nsExistingNote("No previous sessions in this folder.");
+    return;
+  }
+
+  nsExistingFilter.hidden = false;
+  const q = nsExistingFilter.value.trim().toLowerCase();
+  const matches = q
+    ? scoped.filter(
+        (s) =>
+          s.cwd.toLowerCase().includes(q) ||
+          s.preview.toLowerCase().includes(q),
+      )
+    : scoped;
+  if (!matches.length) {
+    nsExistingNote("No matches.");
+    return;
+  }
+  for (const s of matches) {
+    const li = document.createElement("li");
+    li.className = "ns-existing-item";
+    li.title = `${s.cwd}\n${s.preview}`;
+    const preview = document.createElement("div");
+    preview.className = "nse-preview";
+    preview.textContent = s.preview;
+    const sub = document.createElement("div");
+    sub.className = "nse-path";
+    sub.textContent = s.cwd === cwd ? baseName(s.cwd) : s.cwd;
+    li.append(preview, sub);
+    li.addEventListener("click", () => {
+      closeNewModal();
+      startSession(s.cwd, { resume: s.id });
+    });
+    nsExistingList.appendChild(li);
+  }
+}
+
+nsExistingFilter.addEventListener("input", renderNsExisting);
+
+async function browseCwd() {
+  try {
+    const dir = await invoke("plugin:dialog|open", {
+      options: {
+        directory: true,
+        multiple: false,
+        title: "Choose a folder…",
+        defaultPath: newSessionCwd || recentDirs[0] || undefined,
+      },
+    });
+    if (dir) selectCwd(typeof dir === "string" ? dir : dir.path);
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function buildCwdMenu() {
+  nsCwdMenu.replaceChildren();
+  for (const d of recentDirs) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className = "ns-menu-item" + (d === newSessionCwd ? " current" : "");
+    const nm = document.createElement("span");
+    nm.className = "ns-mi-name";
+    nm.textContent = baseName(d);
+    const pth = document.createElement("span");
+    pth.className = "ns-mi-path";
+    pth.textContent = d;
+    b.append(nm, pth);
+    b.addEventListener("click", () => selectCwd(d));
+    nsCwdMenu.appendChild(b);
+  }
+  if (recentDirs.length) {
+    const sep = document.createElement("div");
+    sep.className = "ns-menu-sep";
+    nsCwdMenu.appendChild(sep);
+  }
+  const browse = document.createElement("button");
+  browse.type = "button";
+  browse.className = "ns-menu-item";
+  browse.textContent = "Browse…";
+  browse.addEventListener("click", browseCwd);
+  nsCwdMenu.appendChild(browse);
+}
+
+function buildNsGroupMenu() {
+  nsGroupMenu.replaceChildren();
+  const add = (id, label) => {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className =
+      "ns-menu-item" + (newSessionGroup === (id || "") ? " current" : "");
+    b.textContent = label;
+    b.addEventListener("click", () => {
+      newSessionGroup = id || "";
+      setGroupLabel();
+      closeNsMenus();
+    });
+    nsGroupMenu.appendChild(b);
+  };
+  add("", "Ungrouped");
+  for (const g of groups) add(g.id, g.name);
+  const sep = document.createElement("div");
+  sep.className = "ns-menu-sep";
+  nsGroupMenu.appendChild(sep);
+  const create = document.createElement("button");
+  create.type = "button";
+  create.className = "ns-menu-item";
+  create.textContent = "New group…";
+  create.addEventListener("click", () => {
+    const g = createGroup();
+    newSessionGroup = g.id;
+    setGroupLabel();
+    closeNsMenus();
+  });
+  nsGroupMenu.appendChild(create);
+}
+
+function openNewSession(presetGroupId = null) {
+  const g = presetGroupId && groups.find((x) => x.id === presetGroupId);
+  newSessionGroup = presetGroupId || "";
+  newSessionCwd = (g && g.dir) || settings.defaultCwd || "";
+  newSessionModel = settings.defaultModel || "";
+  nsNameEdited = false;
+  nsWorktree.checked = false;
+  nsRemote.checked = !!settings.remoteByDefault;
+  setCwdLabel();
+  setGroupLabel();
+  setModelLabel();
+  suggestName();
+  closeNsMenus();
+  nsSessions = [];
+  nsSessionsLoaded = false;
+  nsExistingFilter.value = "";
+  renderNsExisting();
+  invoke("list_sessions")
+    .then((items) => {
+      nsSessions = items;
+    })
+    .catch(() => {})
+    .finally(() => {
+      nsSessionsLoaded = true;
+      renderNsExisting();
+    });
+  newModal.hidden = false;
+  nsName.focus();
+}
+
+function closeNewModal() {
+  newModal.hidden = true;
+  closeNsMenus();
+}
+
+async function createFromModal() {
+  if (!newSessionCwd) {
+    toggleNsMenu(nsCwdMenu, buildCwdMenu); // nudge the user to pick a directory
+    return;
+  }
+  const cwd = newSessionCwd;
+  const name = nsName.value.trim() || baseName(cwd);
+  const groupId = newSessionGroup || null;
+  const worktree = nsWorktree.checked;
+  const model = newSessionModel;
+  const remoteControl = nsRemote.checked;
+  closeNewModal();
+  addRecentDir(cwd);
+  startSession(cwd, { name, groupId, worktree, model, remoteControl });
+}
+
+document.getElementById("ns-cwd-btn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleNsMenu(nsCwdMenu, buildCwdMenu);
+});
+document.getElementById("ns-group-btn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleNsMenu(nsGroupMenu, buildNsGroupMenu);
+});
+document.getElementById("ns-model-btn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  toggleNsMenu(nsModelMenu, buildModelMenu);
+});
+nsName.addEventListener("input", () => {
+  nsNameEdited = true;
+});
+nsName.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    createFromModal();
+  }
+});
+document.getElementById("new-create").addEventListener("click", (e) => {
+  e.stopPropagation(); // keep the "pick a directory" nudge menu open
+  createFromModal();
+});
+document.getElementById("new-cancel").addEventListener("click", closeNewModal);
+document.getElementById("new-close").addEventListener("click", closeNewModal);
+document
+  .getElementById("new-backdrop")
+  .addEventListener("click", closeNewModal);
 
 // --- resume picker ---
 const resumeModal = document.getElementById("resume-modal");
@@ -626,7 +1316,7 @@ function renderResume(query) {
     li.append(folder, path, preview);
     li.addEventListener("click", () => {
       closeResume();
-      startSession(s.cwd, s.id);
+      startSession(s.cwd, { resume: s.id });
     });
     resumeList.appendChild(li);
   }
@@ -664,8 +1354,19 @@ document
   .getElementById("resume-backdrop")
   .addEventListener("click", closeResume);
 document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.key === ",") {
+    e.preventDefault();
+    openSettings();
+    return;
+  }
   if (e.key !== "Escape") return;
   if (!resumeModal.hidden) closeResume();
+  if (!closeModal.hidden) closeCloseModal();
+  if (!settingsModal.hidden) closeSettings();
+  if (!newModal.hidden) {
+    if (!nsCwdMenu.hidden || !nsGroupMenu.hidden) closeNsMenus();
+    else closeNewModal();
+  }
   closeContextMenu();
 });
 
@@ -680,14 +1381,17 @@ appMenuBtn.addEventListener("click", (e) => {
 document.addEventListener("click", () => {
   appMenu.hidden = true;
   closeContextMenu();
+  closeNsMenus();
+  setThemeMenu.hidden = true;
 });
 appMenu.addEventListener("click", (e) => {
   const action = e.target.closest("button")?.dataset.action;
   if (!action) return;
   appMenu.hidden = true;
-  if (action === "new") newSession();
+  if (action === "new") openNewSession();
   else if (action === "resume") openResume();
   else if (action === "group") createGroupAndRename();
+  else if (action === "settings") openSettings();
   else if (action === "quit") invoke("quit_app");
 });
 
@@ -723,12 +1427,242 @@ document.getElementById("titlebar").addEventListener("mousedown", (e) => {
 });
 appWindow.onResized(() => syncMaxIcon());
 syncMaxIcon();
+appWindow.onFocusChanged(({ payload }) => {
+  appFocused = payload;
+});
 
-document.getElementById("new-session").addEventListener("click", newSession);
+document
+  .getElementById("new-session")
+  .addEventListener("click", () => openNewSession());
 document.getElementById("resume-session").addEventListener("click", openResume);
 document
   .getElementById("new-group")
   .addEventListener("click", createGroupAndRename);
 invoke("is_dev").then((dev) => document.body.classList.toggle("dev", !!dev));
 
-reconnect();
+// --- close-session confirmation ---
+const closeModal = document.getElementById("close-modal");
+const closeMsg = document.getElementById("close-msg");
+let pendingCloseId = null;
+
+function requestClose(id) {
+  const s = sessions.get(id);
+  if (!s) return;
+  if (!s.live) {
+    closeSession(id); // nothing running — no need to confirm
+    return;
+  }
+  pendingCloseId = id;
+  closeMsg.textContent = `“${s.name}” — its claude process will be stopped.`;
+  closeModal.hidden = false;
+}
+
+function closeCloseModal() {
+  closeModal.hidden = true;
+  pendingCloseId = null;
+}
+
+document
+  .getElementById("close-cancel")
+  .addEventListener("click", closeCloseModal);
+document
+  .getElementById("close-backdrop")
+  .addEventListener("click", closeCloseModal);
+document.getElementById("close-confirm").addEventListener("click", () => {
+  const id = pendingCloseId;
+  closeCloseModal();
+  if (id) closeSession(id);
+});
+
+// --- sidebar collapse ---
+function applySidebarCollapsed() {
+  document.body.classList.toggle("sidebar-collapsed", sidebarCollapsed);
+  const btn = document.getElementById("sidebar-toggle");
+  btn.textContent = sidebarCollapsed ? "»" : "«";
+  btn.title = sidebarCollapsed ? "Show sidebar" : "Hide sidebar";
+  const s = sessions.get(activeId);
+  if (s && s.fit) s.fit.fit();
+}
+
+document.getElementById("sidebar-toggle").addEventListener("click", () => {
+  sidebarCollapsed = !sidebarCollapsed;
+  applySidebarCollapsed();
+  persist();
+});
+
+// --- window resize grips (native decorations are off) ---
+for (const grip of document.querySelectorAll(".resizer")) {
+  grip.addEventListener("mousedown", (e) => {
+    e.preventDefault();
+    appWindow.startResizeDragging(grip.dataset.dir);
+  });
+}
+
+// --- settings ---
+const settingsModal = document.getElementById("settings-modal");
+const setDefcwdLabel = document.getElementById("set-defcwd-label");
+const setThemeMenu = document.getElementById("set-theme-menu");
+const setThemeLabel = document.getElementById("set-theme-label");
+const THEME_OPTIONS = [
+  { value: "auto", label: "Auto (match system)" },
+  { value: "light", label: "Light" },
+  { value: "dark", label: "Dark" },
+];
+
+function themeLabel(value) {
+  return (THEME_OPTIONS.find((o) => o.value === value) || THEME_OPTIONS[0])
+    .label;
+}
+
+function buildThemeMenu() {
+  setThemeMenu.replaceChildren();
+  for (const o of THEME_OPTIONS) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className =
+      "ns-menu-item" + (settings.theme === o.value ? " current" : "");
+    b.textContent = o.label;
+    b.addEventListener("click", () => {
+      settings.theme = o.value;
+      setThemeLabel.textContent = o.label;
+      applyTheme();
+      persist();
+      setThemeMenu.hidden = true;
+    });
+    setThemeMenu.appendChild(b);
+  }
+}
+
+function applyTheme() {
+  if (settings.theme === "light" || settings.theme === "dark") {
+    document.documentElement.dataset.theme = settings.theme;
+  } else {
+    delete document.documentElement.dataset.theme; // auto → follow system
+  }
+  const theme = xtermTheme();
+  for (const s of sessions.values()) if (s.term) s.term.options.theme = theme;
+}
+
+function applySettings() {
+  notificationsEnabled = settings.notifications !== false;
+  applyTheme();
+  applyTerminalFontSize();
+  invoke("set_claude_path", { path: settings.claudePath || null }).catch(
+    () => {},
+  );
+}
+
+function applyTerminalFontSize() {
+  const size = settings.terminalFontSize || 13;
+  for (const s of sessions.values()) {
+    if (!s.term) continue;
+    s.term.options.fontSize = size;
+    if (s.el && s.el.style.display !== "none") s.fit.fit();
+  }
+}
+
+function setDefCwdLabelText() {
+  if (settings.defaultCwd) {
+    setDefcwdLabel.textContent = settings.defaultCwd;
+    setDefcwdLabel.classList.remove("placeholder");
+  } else {
+    setDefcwdLabel.textContent = "None";
+    setDefcwdLabel.classList.add("placeholder");
+  }
+}
+
+function openSettings() {
+  setThemeLabel.textContent = themeLabel(settings.theme);
+  setThemeMenu.hidden = true;
+  document.getElementById("set-claude-path").value = settings.claudePath;
+  document.getElementById("set-fontsize").value =
+    settings.terminalFontSize || 13;
+  document.getElementById("set-notifications").checked =
+    settings.notifications !== false;
+  document.getElementById("set-remote-default").checked =
+    !!settings.remoteByDefault;
+  setDefCwdLabelText();
+  invoke("app_info")
+    .then((info) => {
+      document.getElementById("about-info").textContent =
+        `mandor-term v${info.version} — ${info.description}`;
+    })
+    .catch(() => {});
+  settingsModal.hidden = false;
+}
+
+function closeSettings() {
+  settingsModal.hidden = true;
+}
+
+document.getElementById("set-theme-btn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  const willOpen = setThemeMenu.hidden;
+  setThemeMenu.hidden = true;
+  if (willOpen) {
+    buildThemeMenu();
+    setThemeMenu.hidden = false;
+  }
+});
+document.getElementById("set-claude-path").addEventListener("change", (e) => {
+  settings.claudePath = e.target.value.trim();
+  invoke("set_claude_path", { path: settings.claudePath || null }).catch(
+    () => {},
+  );
+  persist();
+});
+document.getElementById("set-notifications").addEventListener("change", (e) => {
+  settings.notifications = e.target.checked;
+  notificationsEnabled = e.target.checked;
+  persist();
+});
+document
+  .getElementById("set-remote-default")
+  .addEventListener("change", (e) => {
+    settings.remoteByDefault = e.target.checked;
+    persist();
+  });
+document.getElementById("set-fontsize").addEventListener("change", (e) => {
+  const n = parseInt(e.target.value, 10);
+  settings.terminalFontSize = Math.min(24, Math.max(8, isNaN(n) ? 13 : n));
+  e.target.value = settings.terminalFontSize;
+  applyTerminalFontSize();
+  persist();
+});
+document
+  .getElementById("set-defcwd-btn")
+  .addEventListener("click", async () => {
+    try {
+      const dir = await invoke("plugin:dialog|open", {
+        options: {
+          directory: true,
+          title: "Default directory for new sessions",
+          defaultPath: settings.defaultCwd || undefined,
+        },
+      });
+      if (dir) {
+        settings.defaultCwd = typeof dir === "string" ? dir : dir.path;
+        setDefCwdLabelText();
+        persist();
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  });
+document.getElementById("set-defcwd-clear").addEventListener("click", () => {
+  settings.defaultCwd = "";
+  setDefCwdLabelText();
+  persist();
+});
+document
+  .getElementById("settings-close")
+  .addEventListener("click", closeSettings);
+document
+  .getElementById("settings-done")
+  .addEventListener("click", closeSettings);
+document
+  .getElementById("settings-backdrop")
+  .addEventListener("click", closeSettings);
+
+if (POPOUT) runPopout();
+else restore();

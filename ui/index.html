@@ -38,9 +38,19 @@
               </button>
               <button type="button" data-action="group">New group</button>
               <div class="dropdown-sep"></div>
+              <button type="button" data-action="settings">Settings</button>
               <button type="button" data-action="quit">Quit mandor-term</button>
             </div>
           </div>
+          <button
+            id="sidebar-toggle"
+            class="titlebar-menu-btn"
+            type="button"
+            title="Toggle sidebar"
+            aria-label="Toggle sidebar"
+          >
+            «
+          </button>
           <span class="brand">mandor-term</span>
         </div>
         <span id="titlebar-title" class="titlebar-title"></span>
@@ -105,6 +115,100 @@
       </div>
     </div>
 
+    <div id="new-modal" class="modal" hidden>
+      <div class="modal-backdrop" id="new-backdrop"></div>
+      <div class="modal-box modal-form">
+        <div class="modal-header">
+          <span>New session</span>
+          <button
+            id="new-close"
+            class="modal-close"
+            type="button"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <div class="ns-fields">
+          <div class="field">
+            <span class="field-k">Directory</span>
+            <div class="ns-dropdown">
+              <button id="ns-cwd-btn" class="ns-dd-btn" type="button">
+                <span class="folder-ic">📁</span>
+                <span id="ns-cwd-label" class="ns-dd-label placeholder"
+                  >Choose a folder…</span
+                >
+                <span class="ns-caret">▾</span>
+              </button>
+              <div id="ns-cwd-menu" class="ns-menu" hidden></div>
+            </div>
+            <div id="ns-cwd-path" class="ns-path"></div>
+          </div>
+          <div class="field" id="ns-existing-wrap" hidden>
+            <span class="field-k">Resume a session here</span>
+            <input
+              id="ns-existing-filter"
+              class="ns-input ns-existing-filter"
+              type="text"
+              spellcheck="false"
+              placeholder="Filter sessions…"
+              hidden
+            />
+            <ul id="ns-existing-list" class="ns-existing"></ul>
+          </div>
+          <div class="field">
+            <span class="field-k">Group</span>
+            <div class="ns-dropdown">
+              <button id="ns-group-btn" class="ns-dd-btn" type="button">
+                <span id="ns-group-label" class="ns-dd-label">Ungrouped</span>
+                <span class="ns-caret">▾</span>
+              </button>
+              <div id="ns-group-menu" class="ns-menu" hidden></div>
+            </div>
+          </div>
+          <label class="field">
+            <span class="field-k">Name</span>
+            <input
+              id="ns-name"
+              class="ns-input"
+              type="text"
+              spellcheck="false"
+              placeholder="folder name"
+            />
+          </label>
+          <div class="field">
+            <span class="field-k">Model</span>
+            <div class="ns-dropdown">
+              <button id="ns-model-btn" class="ns-dd-btn" type="button">
+                <span id="ns-model-label" class="ns-dd-label">Default</span>
+                <span class="ns-caret">▾</span>
+              </button>
+              <div id="ns-model-menu" class="ns-menu" hidden></div>
+            </div>
+          </div>
+          <label class="field-check">
+            <input id="ns-worktree" type="checkbox" />
+            <span>Create a git worktree named after this session</span>
+          </label>
+          <label class="field-check">
+            <input id="ns-remote" type="checkbox" />
+            <span
+              >Enable remote control (reach this session from the Claude
+              app)</span
+            >
+          </label>
+        </div>
+        <div class="modal-actions">
+          <button id="new-cancel" class="btn-secondary" type="button">
+            Cancel
+          </button>
+          <button id="new-create" class="btn-primary" type="button">
+            Create
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div id="resume-modal" class="modal" hidden>
       <div class="modal-backdrop" id="resume-backdrop"></div>
       <div class="modal-box">
@@ -131,5 +235,121 @@
         </div>
       </div>
     </div>
+
+    <div id="close-modal" class="modal" hidden>
+      <div class="modal-backdrop" id="close-backdrop"></div>
+      <div class="modal-box modal-form">
+        <div class="modal-header"><span>Close session?</span></div>
+        <div class="ns-fields">
+          <p id="close-msg" class="close-msg">—</p>
+        </div>
+        <div class="modal-actions">
+          <button id="close-cancel" class="btn-secondary" type="button">
+            Cancel
+          </button>
+          <button id="close-confirm" class="btn-primary" type="button">
+            Close
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="settings-modal" class="modal" hidden>
+      <div class="modal-backdrop" id="settings-backdrop"></div>
+      <div class="modal-box modal-form">
+        <div class="modal-header">
+          <span>Settings</span>
+          <button
+            id="settings-close"
+            class="modal-close"
+            type="button"
+            aria-label="Close"
+          >
+            ×
+          </button>
+        </div>
+        <div class="ns-fields">
+          <div class="field">
+            <span class="field-k">Theme</span>
+            <div class="ns-dropdown">
+              <button id="set-theme-btn" class="ns-dd-btn" type="button">
+                <span id="set-theme-label" class="ns-dd-label"
+                  >Auto (match system)</span
+                >
+                <span class="ns-caret">▾</span>
+              </button>
+              <div id="set-theme-menu" class="ns-menu" hidden></div>
+            </div>
+          </div>
+          <div class="field">
+            <span class="field-k">Default directory for new sessions</span>
+            <div class="set-row">
+              <button id="set-defcwd-btn" class="ns-dd-btn" type="button">
+                <span class="folder-ic">📁</span>
+                <span id="set-defcwd-label" class="ns-dd-label placeholder"
+                  >None</span
+                >
+              </button>
+              <button id="set-defcwd-clear" class="btn-secondary" type="button">
+                Clear
+              </button>
+            </div>
+          </div>
+          <label class="field">
+            <span class="field-k">Terminal font size</span>
+            <input
+              id="set-fontsize"
+              class="ns-input"
+              type="number"
+              min="8"
+              max="24"
+              step="1"
+            />
+          </label>
+          <label class="field">
+            <span class="field-k"
+              >Claude executable (blank = find on PATH)</span
+            >
+            <input
+              id="set-claude-path"
+              class="ns-input"
+              type="text"
+              spellcheck="false"
+              placeholder="claude"
+            />
+          </label>
+          <label class="field-check">
+            <input id="set-notifications" type="checkbox" />
+            <span
+              >Desktop notification when a background session needs attention
+              and the window is unfocused</span
+            >
+          </label>
+          <label class="field-check">
+            <input id="set-remote-default" type="checkbox" />
+            <span>Enable remote control for all new sessions by default</span>
+          </label>
+          <div class="field">
+            <span class="field-k">About</span>
+            <div id="about-info" class="about-info"></div>
+          </div>
+        </div>
+        <div class="modal-actions">
+          <button id="settings-done" class="btn-primary" type="button">
+            Done
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Resize grips: native decorations are off, so we drive resizing ourselves -->
+    <div class="resizer resizer-n" data-dir="North"></div>
+    <div class="resizer resizer-s" data-dir="South"></div>
+    <div class="resizer resizer-e" data-dir="East"></div>
+    <div class="resizer resizer-w" data-dir="West"></div>
+    <div class="resizer resizer-nw" data-dir="NorthWest"></div>
+    <div class="resizer resizer-ne" data-dir="NorthEast"></div>
+    <div class="resizer resizer-sw" data-dir="SouthWest"></div>
+    <div class="resizer resizer-se" data-dir="SouthEast"></div>
   </body>
 </html>

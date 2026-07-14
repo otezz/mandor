@@ -13,7 +13,7 @@ use tauri::{
     Manager, WindowEvent,
 };
 
-use pty::{close_pty, open_pty, resize_pty, running_ptys, write_pty, PtyState};
+use pty::{close_pty, open_pty, resize_pty, running_ptys, set_claude_path, write_pty, PtyState};
 use sessions::list_sessions;
 
 /// GUI launches (from a .desktop entry) don't inherit the shell's PATH, so tools
@@ -118,6 +118,34 @@ fn app_info() -> serde_json::Value {
     })
 }
 
+/// Show a desktop notification (used when a session wants attention while the
+/// window is unfocused).
+#[tauri::command]
+fn notify(app: tauri::AppHandle, title: String, body: String) {
+    use tauri_plugin_notification::NotificationExt;
+    let _ = app.notification().builder().title(title).body(body).show();
+}
+
+/// Open (or focus) a separate window showing a single session's terminal. The
+/// window reconnects to the already-running PTY by id; label is `popout-<id>`.
+#[tauri::command]
+fn open_session_window(app: tauri::AppHandle, id: String, name: String) -> Result<(), String> {
+    let label = format!("popout-{id}");
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    // `id` is a UUID (url-safe); the human name only goes in the window title.
+    let url = format!("index.html?popout=1&id={id}");
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
+        .title(name)
+        .inner_size(1000.0, 700.0)
+        .min_inner_size(600.0, 400.0)
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Reveal and focus the main window (from the tray or a second-instance launch).
 fn show_main(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -208,11 +236,14 @@ fn main() {
             is_maximized,
             is_dev,
             app_info,
+            notify,
+            open_session_window,
             open_pty,
             write_pty,
             resize_pty,
             close_pty,
             running_ptys,
+            set_claude_path,
             list_sessions
         ])
         .build(tauri::generate_context!())

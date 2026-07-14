@@ -28,6 +28,8 @@ type Sessions = Arc<Mutex<HashMap<String, PtySession>>>;
 #[derive(Clone, Default)]
 pub struct PtyState {
     sessions: Sessions,
+    // Override for the `claude` executable (None / empty = resolve on PATH).
+    claude_bin: Arc<Mutex<Option<String>>>,
 }
 
 impl PtyState {
@@ -59,8 +61,22 @@ pub struct RunningPty {
 }
 
 /// Spawn interactive `claude` in a PTY under `cwd` and start streaming its output.
-/// When `resume` is set, continues that Claude session (`claude --resume <id>`).
+///
+/// Flags mirror the interactive `claude` CLI (not mandor's headless engine):
+/// - `resume`: continue a session (`--resume <id>`).
+/// - `name`: display name recorded in claude's metadata (`-n`), so it shows in
+///   `/resume` and the desktop app — only for fresh sessions (resume keeps the
+///   name claude already stored).
+/// - `worktree`: let claude create a git worktree for the session (`-w [name]`),
+///   named after the session. This is claude's own feature — no git plumbing here.
+/// - `session_id`: force claude's session id (`--session-id <uuid>`) so our PTY
+///   handle id equals the claude session id — lets us `--resume` it after a full
+///   app restart. Only for fresh sessions; mutually exclusive with `resume`.
+/// - `model`: model alias/name (`--model <m>`), e.g. "opus"/"sonnet"/"haiku".
+/// - `remote_control`: register with the Claude app for phone/web access
+///   (`--remote-control`) — works because the session is interactive.
 #[tauri::command]
+#[allow(clippy::too_many_arguments)]
 pub fn open_pty(
     state: State<PtyState>,
     app: AppHandle,
@@ -69,6 +85,11 @@ pub fn open_pty(
     cols: u16,
     rows: u16,
     resume: Option<String>,
+    name: Option<String>,
+    worktree: bool,
+    session_id: Option<String>,
+    model: Option<String>,
+    remote_control: bool,
 ) -> Result<(), String> {
     let pair = native_pty_system()
         .openpty(PtySize {
@@ -79,13 +100,50 @@ pub fn open_pty(
         })
         .map_err(|e| e.to_string())?;
 
-    let mut cmd = CommandBuilder::new("claude");
+    let name = name
+        .as_deref()
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .map(str::to_string);
+
+    let bin = state
+        .claude_bin
+        .lock()
+        .ok()
+        .and_then(|b| b.clone())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "claude".to_string());
+
+    let mut cmd = CommandBuilder::new(bin);
     cmd.cwd(&cwd);
     // Inherited env carries our merged PATH; TERM isn't inherited on a GUI launch.
     cmd.env("TERM", "xterm-256color");
-    if let Some(session_id) = &resume {
+    if resume.is_none() {
+        if let Some(display_name) = &name {
+            cmd.arg("-n");
+            cmd.arg(display_name);
+        }
+    }
+    if worktree {
+        cmd.arg("-w");
+        if let Some(wt_name) = &name {
+            cmd.arg(wt_name);
+        }
+    }
+    if let Some(m) = model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+        cmd.arg("--model");
+        cmd.arg(m);
+    }
+    if remote_control {
+        cmd.arg("--remote-control");
+    }
+    if let Some(sid) = &session_id {
+        cmd.arg("--session-id");
+        cmd.arg(sid);
+    }
+    if let Some(resume_id) = &resume {
         cmd.arg("--resume");
-        cmd.arg(session_id);
+        cmd.arg(resume_id);
     }
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
@@ -204,6 +262,14 @@ pub fn close_pty(state: State<PtyState>, id: String) -> Result<(), String> {
         let _ = session.child.kill();
     }
     Ok(())
+}
+
+/// Set (or clear, with None/empty) the `claude` executable path.
+#[tauri::command]
+pub fn set_claude_path(state: State<PtyState>, path: Option<String>) {
+    if let Ok(mut bin) = state.claude_bin.lock() {
+        *bin = path.filter(|s| !s.trim().is_empty());
+    }
 }
 
 /// Live PTYs (id + cwd), for reconnect-on-reload.
