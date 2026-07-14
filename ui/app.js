@@ -1071,6 +1071,19 @@ function attachTerminal(s) {
       [",", "=", "+", "-", "_"].includes(ev.key)
     )
       return false;
+    // Shift+Enter: most terminals send the same bytes as Enter, so claude can't
+    // tell them apart and submits. Send ESC+CR (what claude's /terminal-setup
+    // binds) so it inserts a newline instead of submitting.
+    if (
+      ev.key === "Enter" &&
+      ev.shiftKey &&
+      !ev.ctrlKey &&
+      !ev.metaKey &&
+      !ev.altKey
+    ) {
+      invoke("write_pty", { id: s.id, data: "\x1b\r" }).catch(() => {});
+      return false;
+    }
     return true;
   });
   search.onDidChangeResults((r) => {
@@ -1935,7 +1948,34 @@ appWindow.onResized(() => syncMaxIcon());
 syncMaxIcon();
 appWindow.onFocusChanged(({ payload }) => {
   appFocused = payload;
+  if (payload) checkUpdate();
 });
+
+// "Restart to update": with no auto-updater, detect that the on-disk binary was
+// replaced (a new .deb installed while running) and offer a restart. Checked on
+// focus and on an interval; only in the main window.
+const updateBanner = document.getElementById("update-banner");
+let updateShown = false;
+async function checkUpdate() {
+  if (POPOUT || updateShown) return;
+  try {
+    if (await invoke("update_available")) {
+      updateShown = true;
+      updateBanner.hidden = false;
+    }
+  } catch {
+    /* ignore */
+  }
+}
+if (!POPOUT) {
+  document
+    .getElementById("update-restart")
+    .addEventListener("click", () => invoke("restart_app").catch(() => {}));
+  document
+    .getElementById("update-dismiss")
+    .addEventListener("click", () => (updateBanner.hidden = true));
+  setInterval(checkUpdate, 60000);
+}
 
 // Dropping OS files onto the window types their path(s) into the active session
 // (Tauri intercepts native file drops, so HTML5 dnd events don't fire here).

@@ -599,6 +599,53 @@ body.dragging {
   display: none;
 }
 
+/* "Restart to update" prompt (a new .deb was installed while running) */
+.update-banner {
+  position: absolute;
+  bottom: 16px;
+  right: 16px;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 8px 8px 14px;
+  background: var(--bg-alt);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--fg);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
+}
+
+.update-banner[hidden] {
+  display: none;
+}
+
+.update-restart {
+  background: var(--accent);
+  color: var(--titlebar);
+  border: none;
+  border-radius: 6px;
+  padding: 6px 12px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.update-dismiss {
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+.update-dismiss:hover {
+  color: var(--fg);
+}
+
 /* Shown while an OS file is dragged over the window */
 .drop-overlay {
   position: absolute;

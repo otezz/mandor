@@ -4,8 +4,10 @@
 mod pty;
 mod sessions;
 
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::SystemTime;
 
 use tauri::{
     menu::{Menu, MenuItem},
@@ -109,6 +111,44 @@ fn is_dev() -> bool {
     cfg!(debug_assertions)
 }
 
+/// The executable path + its mtime captured at launch. There's no auto-updater;
+/// installing a new .deb (`dpkg -i`) replaces the binary on disk while the old
+/// process keeps running, so a newer mtime means an update is waiting for a
+/// restart — the frontend shows a "Restart to update" prompt.
+struct AppStartup {
+    exe: Option<PathBuf>,
+    start_mtime: Option<SystemTime>,
+}
+
+/// True once the on-disk executable has been replaced since launch. Off in dev
+/// (the binary is rebuilt constantly there, which isn't a user-facing update).
+#[tauri::command]
+async fn update_available(startup: tauri::State<'_, AppStartup>) -> Result<bool, String> {
+    if cfg!(debug_assertions) {
+        return Ok(false);
+    }
+    let exe = startup.exe.clone();
+    let start = startup.start_mtime;
+    tauri::async_runtime::spawn_blocking(move || {
+        let (Some(exe), Some(start)) = (exe, start) else {
+            return false;
+        };
+        std::fs::metadata(&exe)
+            .and_then(|m| m.modified())
+            .map(|now| now > start)
+            .unwrap_or(false)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// Relaunch the app (from the "Restart to update" prompt). Live PTYs are killed
+/// via the ExitRequested handler; persisted sessions come back cold, resumable.
+#[tauri::command]
+fn restart_app(app: tauri::AppHandle) {
+    app.restart();
+}
+
 /// App metadata for an About view.
 #[tauri::command]
 fn app_info() -> serde_json::Value {
@@ -176,6 +216,13 @@ fn main() {
         // Remember the main window's size/position across launches.
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(PtyState::default())
+        .manage(AppStartup {
+            exe: std::env::current_exe().ok(),
+            start_mtime: std::env::current_exe()
+                .ok()
+                .and_then(|p| std::fs::metadata(p).ok())
+                .and_then(|m| m.modified().ok()),
+        })
         .setup(|app| {
             // Tray icon: closing the window hides to tray (sessions keep running);
             // Quit really exits (killing sessions via the ExitRequested handler).
@@ -242,6 +289,8 @@ fn main() {
             toggle_maximize,
             is_maximized,
             is_dev,
+            update_available,
+            restart_app,
             app_info,
             notify,
             open_session_window,
