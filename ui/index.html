@@ -358,6 +358,45 @@
               />
               <span class="set-hint">Mouse-wheel scrollback multiplier.</span>
             </div>
+            <div class="set-field">
+              <span class="set-label">Custom themes</span>
+              <div id="set-custom-themes" class="set-custom-themes"></div>
+              <button id="set-add-theme" class="set-ghost" type="button">
+                + Add custom theme…
+              </button>
+              <div id="set-theme-form" class="set-theme-form" hidden>
+                <input
+                  id="set-theme-name"
+                  class="ns-input"
+                  type="text"
+                  spellcheck="false"
+                  placeholder="Theme name"
+                />
+                <textarea
+                  id="set-theme-paste"
+                  class="ns-input set-theme-paste"
+                  spellcheck="false"
+                  placeholder="Paste a Ghostty palette, e.g.&#10;palette = 0=#1d1f21&#10;palette = 1=#cc6566&#10;…&#10;background = #282c34&#10;foreground = #ffffff"
+                ></textarea>
+                <div id="set-theme-err" class="set-theme-err" hidden></div>
+                <div class="set-theme-actions">
+                  <button id="set-theme-cancel" class="set-ghost" type="button">
+                    Cancel
+                  </button>
+                  <button
+                    id="set-theme-save"
+                    class="set-ghost set-theme-save"
+                    type="button"
+                  >
+                    Add theme
+                  </button>
+                </div>
+                <span class="set-hint"
+                  >Copy palettes from Ghostty theme files, terminalcolors.com,
+                  or terminal.sexy.</span
+                >
+              </div>
+            </div>
           </section>
 
           <section class="settings-section" data-section="behavior" hidden>

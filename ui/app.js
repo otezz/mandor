@@ -34,6 +34,7 @@ let settings = {
   terminalFontSize: 13,
   scrollSensitivity: 5,
   remoteByDefault: false,
+  customThemes: [],
 };
 
 const listEl = document.getElementById("session-list");
@@ -59,15 +60,341 @@ function updateTitle() {
   titleEl.textContent = s ? `Mandor — ${s.name}` : "Mandor";
 }
 
-// --- theme: keep xterm colors in sync with the chrome (light/dark) ---
-function xtermTheme() {
-  const cs = getComputedStyle(document.body);
-  const v = (name) => cs.getPropertyValue(name).trim();
+// --- theming: data-driven registry (chrome vars + full 16-color terminal
+// palette). Built-in themes carry hand-tuned chrome; terminal-style themes
+// (Ghostty, pasted custom) omit `chrome` and have it derived from the palette. ---
+function hexToRgb(h) {
+  h = h.replace("#", "");
+  if (h.length === 3)
+    h = h
+      .split("")
+      .map((c) => c + c)
+      .join("");
+  const n = parseInt(h, 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+function rgbToHex(rgb) {
+  return (
+    "#" +
+    rgb
+      .map((v) =>
+        Math.max(0, Math.min(255, Math.round(v)))
+          .toString(16)
+          .padStart(2, "0"),
+      )
+      .join("")
+  );
+}
+function mixHex(a, b, t) {
+  const A = hexToRgb(a);
+  const B = hexToRgb(b);
+  return rgbToHex(A.map((v, i) => v + (B[i] - v) * t));
+}
+function luminance(hex) {
+  const [r, g, b] = hexToRgb(hex).map((v) => {
+    v /= 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  });
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+const isDarkColor = (hex) => luminance(hex) < 0.5;
+
+const BUILTIN_THEMES = {
+  latte: {
+    label: "Latte (light)",
+    chrome: {
+      bg: "#eff1f5",
+      bgAlt: "#e6e9ef",
+      border: "#ccd0da",
+      fg: "#4c4f69",
+      fgDim: "#6c6f85",
+      accent: "#1e66f5",
+      accentBg: "#ccd0da",
+      red: "#d20f39",
+      titlebar: "#dce0e8",
+    },
+    term: {
+      background: "#eff1f5",
+      foreground: "#4c4f69",
+      cursor: "#dc8a78",
+      cursorAccent: "#eff1f5",
+      selectionBackground: "#acb0be",
+      ansi: [
+        "#bcc0cc",
+        "#d20f39",
+        "#40a02b",
+        "#df8e1d",
+        "#1e66f5",
+        "#ea76cb",
+        "#179299",
+        "#5c5f77",
+        "#acb0be",
+        "#e7103f",
+        "#46b02f",
+        "#e49931",
+        "#3878f6",
+        "#ef95d7",
+        "#19a1a8",
+        "#6c6f85",
+      ],
+    },
+  },
+  frappe: {
+    label: "Frappé",
+    chrome: {
+      bg: "#303446",
+      bgAlt: "#292c3c",
+      border: "#414559",
+      fg: "#c6d0f5",
+      fgDim: "#a5adce",
+      accent: "#8caaee",
+      accentBg: "#414559",
+      red: "#e78284",
+      titlebar: "#232634",
+    },
+    term: {
+      background: "#303446",
+      foreground: "#c6d0f5",
+      cursor: "#f2d5cf",
+      cursorAccent: "#303446",
+      selectionBackground: "#626880",
+      ansi: [
+        "#51576d",
+        "#e78284",
+        "#a6d189",
+        "#e5c890",
+        "#8caaee",
+        "#f4b8e4",
+        "#81c8be",
+        "#b5bfe2",
+        "#626880",
+        "#eda0a2",
+        "#b9dba2",
+        "#ecd7ae",
+        "#adc2f3",
+        "#f38ed8",
+        "#98d2ca",
+        "#a5adce",
+      ],
+    },
+  },
+  macchiato: {
+    label: "Macchiato",
+    chrome: {
+      bg: "#24273a",
+      bgAlt: "#1e2030",
+      border: "#363a4f",
+      fg: "#cad3f5",
+      fgDim: "#a5adcb",
+      accent: "#8aadf4",
+      accentBg: "#363a4f",
+      red: "#ed8796",
+      titlebar: "#181926",
+    },
+    term: {
+      background: "#24273a",
+      foreground: "#cad3f5",
+      cursor: "#f4dbd6",
+      cursorAccent: "#24273a",
+      selectionBackground: "#5b6078",
+      ansi: [
+        "#494d64",
+        "#ed8796",
+        "#a6da95",
+        "#eed49f",
+        "#8aadf4",
+        "#f5bde6",
+        "#8bd5ca",
+        "#b8c0e0",
+        "#5b6078",
+        "#f2a7b2",
+        "#bde3b0",
+        "#f4e3c1",
+        "#adc5f7",
+        "#f493da",
+        "#a5ded6",
+        "#a5adcb",
+      ],
+    },
+  },
+  mocha: {
+    label: "Mocha",
+    chrome: {
+      bg: "#1e1e2e",
+      bgAlt: "#181825",
+      border: "#313244",
+      fg: "#cdd6f4",
+      fgDim: "#a6adc8",
+      accent: "#89b4fa",
+      accentBg: "#313244",
+      red: "#f38ba8",
+      titlebar: "#11111b",
+    },
+    term: {
+      background: "#1e1e2e",
+      foreground: "#cdd6f4",
+      cursor: "#f5e0dc",
+      cursorAccent: "#1e1e2e",
+      selectionBackground: "#585b70",
+      ansi: [
+        "#45475a",
+        "#f38ba8",
+        "#a6e3a1",
+        "#f9e2af",
+        "#89b4fa",
+        "#f5c2e7",
+        "#94e2d5",
+        "#bac2de",
+        "#585b70",
+        "#f7aec2",
+        "#c2ecbf",
+        "#fcd682",
+        "#aeccfc",
+        "#f398da",
+        "#b1eae1",
+        "#a6adc8",
+      ],
+    },
+  },
+  "ghostty-dark": {
+    label: "Ghostty Default Dark",
+    term: {
+      background: "#282c34",
+      foreground: "#ffffff",
+      cursor: "#ffffff",
+      cursorAccent: "#353a44",
+      selectionBackground: "#ffffff",
+      selectionForeground: "#282c34",
+      ansi: [
+        "#1d1f21",
+        "#cc6566",
+        "#b6bd68",
+        "#f0c674",
+        "#82a2be",
+        "#b294bb",
+        "#8abeb7",
+        "#c4c8c6",
+        "#666666",
+        "#d54e53",
+        "#b9ca4b",
+        "#e7c547",
+        "#7aa6da",
+        "#c397d8",
+        "#70c0b1",
+        "#eaeaea",
+      ],
+    },
+  },
+};
+
+function getTheme(key) {
+  if (BUILTIN_THEMES[key]) return BUILTIN_THEMES[key];
+  return (settings.customThemes || []).find((t) => t.id === key) || null;
+}
+// [key, theme] pairs for menus: built-ins first, then custom themes.
+function themeEntries() {
+  return [
+    ...Object.entries(BUILTIN_THEMES),
+    ...(settings.customThemes || []).map((t) => [t.id, t]),
+  ];
+}
+
+// Derive chrome vars from a terminal palette (for themes without hand-tuned
+// chrome): shades off the background, dim the foreground, borrow accent/red.
+function deriveChrome(term) {
+  const bg = term.background;
+  const fg = term.foreground;
+  const dark = isDarkColor(bg);
+  const toward = dark ? "#000000" : "#ffffff";
+  const away = dark ? "#ffffff" : "#000000";
   return {
-    background: v("--term-bg"),
-    foreground: v("--term-fg"),
-    cursor: v("--term-cursor"),
-    selectionBackground: v("--term-selection"),
+    bg,
+    bgAlt: mixHex(bg, toward, 0.35),
+    titlebar: mixHex(bg, toward, 0.55),
+    border: mixHex(bg, away, 0.14),
+    accentBg: mixHex(bg, away, 0.14),
+    fg,
+    fgDim: mixHex(fg, bg, 0.4),
+    accent: term.ansi[12] || term.ansi[4],
+    red: term.ansi[9] || term.ansi[1],
+  };
+}
+const chromeFor = (theme) => theme.chrome || deriveChrome(theme.term);
+
+const XTERM_ANSI_KEYS = [
+  "black",
+  "red",
+  "green",
+  "yellow",
+  "blue",
+  "magenta",
+  "cyan",
+  "white",
+  "brightBlack",
+  "brightRed",
+  "brightGreen",
+  "brightYellow",
+  "brightBlue",
+  "brightMagenta",
+  "brightCyan",
+  "brightWhite",
+];
+// Build an xterm ITheme (bg/fg/cursor/selection + the 16 ANSI colors).
+function xtermTheme(term) {
+  const t = {
+    background: term.background,
+    foreground: term.foreground,
+    cursor: term.cursor,
+    cursorAccent: term.cursorAccent || term.background,
+    selectionBackground: term.selectionBackground,
+  };
+  if (term.selectionForeground)
+    t.selectionForeground = term.selectionForeground;
+  term.ansi.forEach((c, i) => (t[XTERM_ANSI_KEYS[i]] = c));
+  return t;
+}
+function activeXtermTheme() {
+  return xtermTheme((getTheme(settings.theme) || BUILTIN_THEMES.frappe).term);
+}
+
+// Parse a Ghostty-format palette (also matches iTerm2-Color-Schemes' ghostty
+// files): `palette = N=#hex`, `background/foreground/cursor-color/...`.
+// Returns { term } or null if the required colors (16 palette + bg + fg) are
+// missing.
+function parseGhosttyTheme(text) {
+  const ansi = new Array(16).fill(null);
+  const hex6 = /^#?[0-9a-fA-F]{6}$/;
+  const norm = (v) => (v.startsWith("#") ? v : "#" + v).toLowerCase();
+  let background, foreground, cursor, cursorAccent, selBg, selFg;
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    const eq = line.indexOf("=");
+    if (!line || eq === -1) continue;
+    const key = line.slice(0, eq).trim().toLowerCase();
+    const val = line.slice(eq + 1).trim();
+    if (key === "palette") {
+      const m = val.match(/^(\d{1,2})\s*=\s*(#?[0-9a-fA-F]{6})$/);
+      if (m && +m[1] >= 0 && +m[1] < 16) ansi[+m[1]] = norm(m[2]);
+    } else if (key === "background" && hex6.test(val)) background = norm(val);
+    else if (key === "foreground" && hex6.test(val)) foreground = norm(val);
+    else if (key === "cursor-color" && hex6.test(val)) cursor = norm(val);
+    else if (key === "cursor-text" && hex6.test(val)) cursorAccent = norm(val);
+    else if (key === "selection-background" && hex6.test(val))
+      selBg = norm(val);
+    else if (key === "selection-foreground" && hex6.test(val))
+      selFg = norm(val);
+  }
+  if (ansi.some((c) => !c) || !background || !foreground) return null;
+  return {
+    term: {
+      background,
+      foreground,
+      cursor: cursor || foreground,
+      cursorAccent: cursorAccent || background,
+      selectionBackground: selBg || ansi[8],
+      selectionForeground: selFg,
+      ansi,
+    },
   };
 }
 
@@ -114,9 +441,10 @@ function loadStore() {
     sidebarCollapsed = !!data.sidebarCollapsed;
     if (data.settings && typeof data.settings === "object")
       settings = { ...settings, ...data.settings };
-    // migrate old/unknown theme values (auto/light/dark) to a Catppuccin flavor
-    if (!["latte", "frappe", "macchiato", "mocha"].includes(settings.theme))
-      settings.theme = "frappe";
+    if (!Array.isArray(settings.customThemes)) settings.customThemes = [];
+    // fall back to the default flavor if the saved theme no longer exists
+    // (covers old auto/light/dark values and deleted custom themes)
+    if (!getTheme(settings.theme)) settings.theme = "frappe";
     savedSessions = Array.isArray(data.sessions) ? data.sessions : [];
   } catch (e) {
     console.error(e);
@@ -720,7 +1048,7 @@ function attachTerminal(s) {
     scrollSensitivity: settings.scrollSensitivity || 5,
     fastScrollSensitivity: (settings.scrollSensitivity || 5) * 2,
     allowProposedApi: true,
-    theme: xtermTheme(),
+    theme: activeXtermTheme(),
   });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
@@ -1081,7 +1409,7 @@ resizeObserver.observe(termsEl);
 
 const schemeQuery = window.matchMedia("(prefers-color-scheme: dark)");
 schemeQuery.addEventListener("change", () => {
-  const theme = xtermTheme();
+  const theme = activeXtermTheme();
   for (const s of sessions.values()) if (s.term) s.term.options.theme = theme;
 });
 
@@ -1696,29 +2024,47 @@ const settingsModal = document.getElementById("settings-modal");
 const setDefcwdPath = document.getElementById("set-defcwd");
 const setThemeMenu = document.getElementById("set-theme-menu");
 const setThemeLabel = document.getElementById("set-theme-label");
-const THEME_OPTIONS = [
-  { value: "latte", label: "Latte (light)" },
-  { value: "frappe", label: "Frappé" },
-  { value: "macchiato", label: "Macchiato" },
-  { value: "mocha", label: "Mocha" },
-];
 
 function themeLabel(value) {
-  return (THEME_OPTIONS.find((o) => o.value === value) || THEME_OPTIONS[0])
-    .label;
+  return (getTheme(value) || BUILTIN_THEMES.frappe).label;
+}
+
+// A compact preview strip: background, six ANSI accents, foreground.
+function swatchStrip(theme) {
+  const strip = document.createElement("span");
+  strip.className = "theme-swatches";
+  const t = theme.term;
+  for (const col of [
+    t.background,
+    t.ansi[1],
+    t.ansi[2],
+    t.ansi[3],
+    t.ansi[4],
+    t.ansi[5],
+    t.ansi[6],
+    t.foreground,
+  ]) {
+    const sw = document.createElement("i");
+    sw.style.background = col;
+    strip.appendChild(sw);
+  }
+  return strip;
 }
 
 function buildThemeMenu() {
   setThemeMenu.replaceChildren();
-  for (const o of THEME_OPTIONS) {
+  for (const [key, theme] of themeEntries()) {
     const b = document.createElement("button");
     b.type = "button";
     b.className =
-      "ns-menu-item" + (settings.theme === o.value ? " current" : "");
-    b.textContent = o.label;
+      "ns-menu-item theme-item" + (settings.theme === key ? " current" : "");
+    const name = document.createElement("span");
+    name.className = "theme-name";
+    name.textContent = theme.label;
+    b.append(name, swatchStrip(theme));
     b.addEventListener("click", () => {
-      settings.theme = o.value;
-      setThemeLabel.textContent = o.label;
+      settings.theme = key;
+      setThemeLabel.textContent = theme.label;
       applyTheme();
       persist();
       setThemeMenu.hidden = true;
@@ -1728,9 +2074,97 @@ function buildThemeMenu() {
 }
 
 function applyTheme() {
-  document.documentElement.dataset.theme = settings.theme;
-  const theme = xtermTheme();
-  for (const s of sessions.values()) if (s.term) s.term.options.theme = theme;
+  const theme = getTheme(settings.theme) || BUILTIN_THEMES.frappe;
+  const c = chromeFor(theme);
+  const root = document.documentElement;
+  root.style.setProperty("--bg", c.bg);
+  root.style.setProperty("--bg-alt", c.bgAlt);
+  root.style.setProperty("--border", c.border);
+  root.style.setProperty("--fg", c.fg);
+  root.style.setProperty("--fg-dim", c.fgDim);
+  root.style.setProperty("--accent", c.accent);
+  root.style.setProperty("--accent-bg", c.accentBg);
+  root.style.setProperty("--red", c.red);
+  root.style.setProperty("--titlebar", c.titlebar);
+  root.dataset.mode = isDarkColor(c.bg) ? "dark" : "light";
+  const xt = xtermTheme(theme.term);
+  for (const s of sessions.values()) if (s.term) s.term.options.theme = xt;
+}
+
+// --- custom themes (paste a Ghostty palette) ---
+function renderCustomThemes() {
+  const box = document.getElementById("set-custom-themes");
+  if (!box) return;
+  box.replaceChildren();
+  const list = settings.customThemes || [];
+  if (!list.length) {
+    const empty = document.createElement("div");
+    empty.className = "set-hint";
+    empty.textContent = "None yet.";
+    box.appendChild(empty);
+    return;
+  }
+  for (const t of list) {
+    const row = document.createElement("div");
+    row.className = "set-theme-row";
+    const name = document.createElement("span");
+    name.className = "set-theme-row-name";
+    name.textContent = t.label;
+    const del = document.createElement("button");
+    del.type = "button";
+    del.className = "set-theme-del";
+    del.textContent = "✕";
+    del.title = "Delete theme";
+    del.addEventListener("click", () => deleteCustomTheme(t.id));
+    row.append(swatchStrip(t), name, del);
+    box.appendChild(row);
+  }
+}
+
+function deleteCustomTheme(id) {
+  settings.customThemes = (settings.customThemes || []).filter(
+    (t) => t.id !== id,
+  );
+  if (settings.theme === id) {
+    settings.theme = "frappe";
+    setThemeLabel.textContent = themeLabel(settings.theme);
+    applyTheme();
+  }
+  persist();
+  renderCustomThemes();
+}
+
+function clearThemeForm() {
+  document.getElementById("set-theme-name").value = "";
+  document.getElementById("set-theme-paste").value = "";
+  const err = document.getElementById("set-theme-err");
+  err.hidden = true;
+  err.textContent = "";
+}
+
+function saveCustomTheme() {
+  const err = document.getElementById("set-theme-err");
+  const parsed = parseGhosttyTheme(
+    document.getElementById("set-theme-paste").value,
+  );
+  if (!parsed) {
+    err.textContent =
+      "Couldn't parse — need palette 0–15, background, and foreground.";
+    err.hidden = false;
+    return;
+  }
+  const label =
+    document.getElementById("set-theme-name").value.trim() || "Custom theme";
+  const id = "custom-" + crypto.randomUUID();
+  settings.customThemes = settings.customThemes || [];
+  settings.customThemes.push({ id, label, term: parsed.term });
+  settings.theme = id; // select the new theme right away
+  setThemeLabel.textContent = label;
+  applyTheme();
+  persist();
+  renderCustomThemes();
+  document.getElementById("set-theme-form").hidden = true;
+  clearThemeForm();
 }
 
 function applySettings() {
@@ -1882,6 +2316,9 @@ function openSettings() {
     !!settings.remoteByDefault;
   setDefCwdLabelText();
   renderSettingsGroups();
+  renderCustomThemes();
+  document.getElementById("set-theme-form").hidden = true;
+  clearThemeForm();
   showSettingsSection("appearance");
   invoke("app_info")
     .then((info) => {
@@ -1919,6 +2356,18 @@ document.getElementById("set-theme-btn").addEventListener("click", (e) => {
     setThemeMenu.hidden = false;
   }
 });
+document.getElementById("set-add-theme").addEventListener("click", () => {
+  const f = document.getElementById("set-theme-form");
+  f.hidden = !f.hidden;
+  if (!f.hidden) document.getElementById("set-theme-name").focus();
+});
+document.getElementById("set-theme-cancel").addEventListener("click", () => {
+  document.getElementById("set-theme-form").hidden = true;
+  clearThemeForm();
+});
+document
+  .getElementById("set-theme-save")
+  .addEventListener("click", saveCustomTheme);
 document.getElementById("set-claude-path").addEventListener("change", (e) => {
   settings.claudePath = e.target.value.trim();
   invoke("set_claude_path", { path: settings.claudePath || null }).catch(

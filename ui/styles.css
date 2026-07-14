@@ -1,8 +1,8 @@
-/* Catppuccin flavors. Default (:root) is Frappé; data-theme picks a flavor.
-   Vars map to: base, mantle, surface0, text, subtext0, blue, surface0, red,
-   crust, base, text, rosewater, surface2. --term-* feed xterm from JS. */
-:root,
-:root[data-theme="frappe"] {
+/* Chrome color variables. applyTheme() in app.js drives these at runtime from
+   the selected theme (built-in or custom); this :root block is only the pre-JS
+   fallback (Catppuccin Frappé). Terminal/xterm colors — including the full
+   16-color ANSI palette — are set from JS too; see BUILTIN_THEMES in app.js. */
+:root {
   --bg: #303446;
   --bg-alt: #292c3c;
   --border: #414559;
@@ -12,62 +12,6 @@
   --accent-bg: #414559;
   --red: #e78284;
   --titlebar: #232634;
-
-  --term-bg: #303446;
-  --term-fg: #c6d0f5;
-  --term-cursor: #f2d5cf;
-  --term-selection: #626880;
-}
-
-:root[data-theme="latte"] {
-  --bg: #eff1f5;
-  --bg-alt: #e6e9ef;
-  --border: #ccd0da;
-  --fg: #4c4f69;
-  --fg-dim: #6c6f85;
-  --accent: #1e66f5;
-  --accent-bg: #ccd0da;
-  --red: #d20f39;
-  --titlebar: #dce0e8;
-
-  --term-bg: #eff1f5;
-  --term-fg: #4c4f69;
-  --term-cursor: #dc8a78;
-  --term-selection: #acb0be;
-}
-
-:root[data-theme="macchiato"] {
-  --bg: #24273a;
-  --bg-alt: #1e2030;
-  --border: #363a4f;
-  --fg: #cad3f5;
-  --fg-dim: #a5adcb;
-  --accent: #8aadf4;
-  --accent-bg: #363a4f;
-  --red: #ed8796;
-  --titlebar: #181926;
-
-  --term-bg: #24273a;
-  --term-fg: #cad3f5;
-  --term-cursor: #f4dbd6;
-  --term-selection: #5b6078;
-}
-
-:root[data-theme="mocha"] {
-  --bg: #1e1e2e;
-  --bg-alt: #181825;
-  --border: #313244;
-  --fg: #cdd6f4;
-  --fg-dim: #a6adc8;
-  --accent: #89b4fa;
-  --accent-bg: #313244;
-  --red: #f38ba8;
-  --titlebar: #11111b;
-
-  --term-bg: #1e1e2e;
-  --term-fg: #cdd6f4;
-  --term-cursor: #f5e0dc;
-  --term-selection: #585b70;
 }
 
 * {
@@ -706,6 +650,7 @@ body.dragging {
   display: flex;
   align-items: flex-start;
   justify-content: center;
+  overflow-y: auto; /* scroll the whole box when the window is shorter than it */
 }
 
 .modal[hidden] {
@@ -720,7 +665,7 @@ body.dragging {
 
 .modal-box {
   position: relative;
-  margin-top: 8vh;
+  margin: 8vh 0;
   width: min(640px, 90vw);
   max-height: 80vh;
   display: flex;
@@ -817,6 +762,7 @@ body.dragging {
 /* New-session modal (form) */
 .modal-form {
   overflow: visible; /* let the dropdown menus escape the box */
+  max-height: none; /* grow to content; the .modal overlay scrolls when tall */
 }
 
 .ns-fields {
@@ -934,6 +880,100 @@ body.dragging {
 
 .ns-mi-name {
   display: block;
+}
+
+/* Theme picker: label + a preview strip of palette swatches */
+#set-theme-menu {
+  min-width: 240px;
+}
+
+.theme-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.theme-name {
+  flex: none;
+}
+
+.theme-swatches {
+  display: inline-flex;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.theme-swatches i {
+  display: block;
+  width: 11px;
+  height: 15px;
+}
+
+.set-custom-themes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+
+.set-theme-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.set-theme-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 13px;
+}
+
+.set-theme-del {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 13px;
+  line-height: 1;
+  padding: 2px 4px;
+  cursor: pointer;
+}
+
+.set-theme-del:hover {
+  color: var(--red);
+}
+
+.set-theme-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.set-theme-paste {
+  min-height: 120px;
+  resize: vertical;
+  font-family: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+  font-size: 12px;
+  white-space: pre;
+  overflow: auto;
+}
+
+.set-theme-err {
+  color: var(--red);
+  font-size: 12px;
+}
+
+.set-theme-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .ns-mi-path {
