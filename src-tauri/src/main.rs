@@ -159,6 +159,13 @@ fn main() {
     #[cfg(unix)]
     ensure_tools_on_path();
 
+    // Dev (debug) builds run under a distinct program name so GNOME/Wayland
+    // treats them as a separate app in the taskbar (and doesn't paint them with
+    // an installed release build's icon). The app-id / WM_CLASS is derived from
+    // the program name at GTK init, so this must run before Tauri.
+    #[cfg(all(debug_assertions, target_os = "linux"))]
+    glib::set_prgname(Some("mandor-term-dev"));
+
     tauri::Builder::default()
         // Must be first: focus the existing window instead of launching a duplicate.
         .plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {

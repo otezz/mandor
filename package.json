@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "tauri": "tauri",
-    "dev": "tauri dev",
+    "dev": "tauri dev --config src-tauri/tauri.dev.conf.json",
     "fmt": "prettier --write ui && cargo fmt --manifest-path src-tauri/Cargo.toml",
     "fmt:check": "prettier --check ui && cargo fmt --check --manifest-path src-tauri/Cargo.toml",
     "prepare": "git config core.hooksPath .githooks"

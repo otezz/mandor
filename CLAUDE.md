@@ -48,7 +48,7 @@ new/resume); each session is its own PTY running interactive `claude`.
 ## Development
 
 ```bash
-bun run tauri dev                       # dev app (Rust auto-rebuilds; Ctrl+R reloads UI)
+bun run dev                             # dev app (own identifier/config namespace + amber titlebar; Rust auto-rebuilds, Ctrl+R reloads UI)
 bun build ui/app.js --target=browser    # syntax-check the frontend after edits
 cargo check --manifest-path src-tauri/Cargo.toml
 ```
