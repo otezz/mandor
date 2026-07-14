@@ -51,9 +51,8 @@
           >
             «
           </button>
-          <span class="brand">mandor-term</span>
         </div>
-        <span id="titlebar-title" class="titlebar-title"></span>
+        <span id="titlebar-title" class="titlebar-title">mandor-term</span>
         <div class="titlebar-controls">
           <button
             id="win-min"
@@ -96,14 +95,14 @@
           <div class="sidebar-header">
             <button id="new-session" type="button">+ New</button>
             <button id="resume-session" type="button">Resume…</button>
-            <button id="new-group" type="button" title="New group">
-              + Group
-            </button>
           </div>
           <div id="session-list"></div>
         </aside>
         <main id="main">
           <div id="terminals"></div>
+          <div id="drop-overlay" class="drop-overlay" hidden>
+            <span>Drop file to add its path</span>
+          </div>
           <div id="empty">
             <p>No sessions yet.</p>
             <p class="hint">
@@ -256,88 +255,136 @@
 
     <div id="settings-modal" class="modal" hidden>
       <div class="modal-backdrop" id="settings-backdrop"></div>
-      <div class="modal-box modal-form">
-        <div class="modal-header">
-          <span>Settings</span>
+      <div class="settings-dialog">
+        <div class="settings-nav">
+          <div class="settings-title">Settings</div>
+          <button
+            class="settings-tab active"
+            type="button"
+            data-section="appearance"
+          >
+            Appearance
+          </button>
+          <button class="settings-tab" type="button" data-section="behavior">
+            Behavior
+          </button>
+          <button class="settings-tab" type="button" data-section="groups">
+            Groups
+          </button>
+          <button class="settings-tab" type="button" data-section="advanced">
+            Advanced
+          </button>
+          <button class="settings-tab" type="button" data-section="about">
+            About
+          </button>
+        </div>
+        <div class="settings-content">
           <button
             id="settings-close"
-            class="modal-close"
+            class="settings-x"
             type="button"
-            aria-label="Close"
+            title="Close"
           >
-            ×
+            ✕
           </button>
-        </div>
-        <div class="ns-fields">
-          <div class="field">
-            <span class="field-k">Theme</span>
-            <div class="ns-dropdown">
-              <button id="set-theme-btn" class="ns-dd-btn" type="button">
-                <span id="set-theme-label" class="ns-dd-label"
-                  >Auto (match system)</span
-                >
-                <span class="ns-caret">▾</span>
-              </button>
-              <div id="set-theme-menu" class="ns-menu" hidden></div>
+
+          <section class="settings-section" data-section="appearance">
+            <div class="set-field">
+              <span class="set-label">Theme</span>
+              <div class="ns-dropdown">
+                <button id="set-theme-btn" class="ns-dd-btn" type="button">
+                  <span id="set-theme-label" class="ns-dd-label">Auto</span>
+                  <span class="ns-caret">▾</span>
+                </button>
+                <div id="set-theme-menu" class="ns-menu" hidden></div>
+              </div>
             </div>
-          </div>
-          <div class="field">
-            <span class="field-k">Default directory for new sessions</span>
-            <div class="set-row">
-              <button id="set-defcwd-btn" class="ns-dd-btn" type="button">
-                <span class="folder-ic">📁</span>
-                <span id="set-defcwd-label" class="ns-dd-label placeholder"
-                  >None</span
-                >
-              </button>
-              <button id="set-defcwd-clear" class="btn-secondary" type="button">
-                Clear
-              </button>
+            <div class="set-field">
+              <span class="set-label">Terminal font size</span>
+              <input
+                id="set-fontsize"
+                class="ns-input"
+                type="number"
+                min="8"
+                max="24"
+                step="1"
+              />
             </div>
-          </div>
-          <label class="field">
-            <span class="field-k">Terminal font size</span>
-            <input
-              id="set-fontsize"
-              class="ns-input"
-              type="number"
-              min="8"
-              max="24"
-              step="1"
-            />
-          </label>
-          <label class="field">
-            <span class="field-k"
-              >Claude executable (blank = find on PATH)</span
-            >
-            <input
-              id="set-claude-path"
-              class="ns-input"
-              type="text"
-              spellcheck="false"
-              placeholder="claude"
-            />
-          </label>
-          <label class="field-check">
-            <input id="set-notifications" type="checkbox" />
-            <span
-              >Desktop notification when a background session needs attention
-              and the window is unfocused</span
-            >
-          </label>
-          <label class="field-check">
-            <input id="set-remote-default" type="checkbox" />
-            <span>Enable remote control for all new sessions by default</span>
-          </label>
-          <div class="field">
-            <span class="field-k">About</span>
-            <div id="about-info" class="about-info"></div>
-          </div>
-        </div>
-        <div class="modal-actions">
-          <button id="settings-done" class="btn-primary" type="button">
-            Done
-          </button>
+            <div class="set-field">
+              <span class="set-label">Scroll speed</span>
+              <input
+                id="set-scroll"
+                class="ns-input"
+                type="number"
+                min="1"
+                max="20"
+                step="1"
+              />
+              <span class="set-hint">Mouse-wheel scrollback multiplier.</span>
+            </div>
+          </section>
+
+          <section class="settings-section" data-section="behavior" hidden>
+            <label class="set-check">
+              <input id="set-notifications" type="checkbox" />
+              <span
+                >Desktop notification when a background session needs attention
+                and the window is unfocused</span
+              >
+            </label>
+            <label class="set-check">
+              <input id="set-remote-default" type="checkbox" />
+              <span>Enable remote control for all new sessions by default</span>
+            </label>
+            <div class="set-field">
+              <span class="set-label">Default directory for new sessions</span>
+              <div class="set-dir-row">
+                <span id="set-defcwd" class="set-dir-path">— none —</span>
+                <button id="set-defcwd-btn" class="set-ghost" type="button">
+                  Choose…
+                </button>
+                <button id="set-defcwd-clear" class="set-ghost" type="button">
+                  Clear
+                </button>
+              </div>
+            </div>
+          </section>
+
+          <section class="settings-section" data-section="groups" hidden>
+            <div class="set-hint">
+              Groups auto-add new sessions started under their configured
+              folder.
+            </div>
+            <div id="set-groups" class="set-groups"></div>
+            <button id="set-add-group" class="set-ghost" type="button">
+              + New group
+            </button>
+          </section>
+
+          <section class="settings-section" data-section="advanced" hidden>
+            <div class="set-field">
+              <span class="set-label">Claude executable</span>
+              <input
+                id="set-claude-path"
+                class="ns-input"
+                type="text"
+                spellcheck="false"
+                placeholder="claude (found on PATH)"
+              />
+              <span class="set-hint"
+                >Full path to the claude binary. Leave blank to use the one on
+                your PATH.</span
+              >
+            </div>
+          </section>
+
+          <section class="settings-section" data-section="about" hidden>
+            <div class="about-head">
+              <div class="about-name">mandor-term</div>
+              <div id="about-version" class="about-version">v—</div>
+            </div>
+            <div id="about-desc" class="about-desc"></div>
+          </section>
         </div>
       </div>
     </div>

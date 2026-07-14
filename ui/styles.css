@@ -1,49 +1,32 @@
-:root {
-  --bg: #1e1e2e;
-  --bg-alt: #181825;
-  --border: #313244;
-  --fg: #cdd6f4;
-  --fg-dim: #9399b2;
-  --accent: #89b4fa;
-  --accent-bg: #313244;
-  --red: #f38ba8;
-  --titlebar: #11111b;
+/* Catppuccin flavors. Default (:root) is Frappé; data-theme picks a flavor.
+   Vars map to: base, mantle, surface0, text, subtext0, blue, surface0, red,
+   crust, base, text, rosewater, surface2. --term-* feed xterm from JS. */
+:root,
+:root[data-theme="frappe"] {
+  --bg: #303446;
+  --bg-alt: #292c3c;
+  --border: #414559;
+  --fg: #c6d0f5;
+  --fg-dim: #a5adce;
+  --accent: #8caaee;
+  --accent-bg: #414559;
+  --red: #e78284;
+  --titlebar: #232634;
 
-  /* Consumed by xterm.js (kept in sync from JS) so the terminal matches chrome. */
-  --term-bg: #1e1e2e;
-  --term-fg: #cdd6f4;
-  --term-cursor: #f5e0dc;
-  --term-selection: #585b70;
+  --term-bg: #303446;
+  --term-fg: #c6d0f5;
+  --term-cursor: #f2d5cf;
+  --term-selection: #626880;
 }
 
-/* Light palette shared by "auto" (system light) and the explicit override. */
-@media (prefers-color-scheme: light) {
-  :root:not([data-theme]) {
-    --bg: #eff1f5;
-    --bg-alt: #e6e9ef;
-    --border: #ccd0da;
-    --fg: #4c4f69;
-    --fg-dim: #6c6f85;
-    --accent: #1e66f5;
-    --accent-bg: #dce0e8;
-    --red: #d20f39;
-    --titlebar: #dce0e8;
-
-    --term-bg: #eff1f5;
-    --term-fg: #4c4f69;
-    --term-cursor: #dc8a78;
-    --term-selection: #acb0be;
-  }
-}
-
-:root[data-theme="light"] {
+:root[data-theme="latte"] {
   --bg: #eff1f5;
   --bg-alt: #e6e9ef;
   --border: #ccd0da;
   --fg: #4c4f69;
   --fg-dim: #6c6f85;
   --accent: #1e66f5;
-  --accent-bg: #dce0e8;
+  --accent-bg: #ccd0da;
   --red: #d20f39;
   --titlebar: #dce0e8;
 
@@ -51,6 +34,40 @@
   --term-fg: #4c4f69;
   --term-cursor: #dc8a78;
   --term-selection: #acb0be;
+}
+
+:root[data-theme="macchiato"] {
+  --bg: #24273a;
+  --bg-alt: #1e2030;
+  --border: #363a4f;
+  --fg: #cad3f5;
+  --fg-dim: #a5adcb;
+  --accent: #8aadf4;
+  --accent-bg: #363a4f;
+  --red: #ed8796;
+  --titlebar: #181926;
+
+  --term-bg: #24273a;
+  --term-fg: #cad3f5;
+  --term-cursor: #f4dbd6;
+  --term-selection: #5b6078;
+}
+
+:root[data-theme="mocha"] {
+  --bg: #1e1e2e;
+  --bg-alt: #181825;
+  --border: #313244;
+  --fg: #cdd6f4;
+  --fg-dim: #a6adc8;
+  --accent: #89b4fa;
+  --accent-bg: #313244;
+  --red: #f38ba8;
+  --titlebar: #11111b;
+
+  --term-bg: #1e1e2e;
+  --term-fg: #cdd6f4;
+  --term-cursor: #f5e0dc;
+  --term-selection: #585b70;
 }
 
 * {
@@ -74,6 +91,13 @@ body {
   display: flex;
   flex-direction: column;
   height: 100vh;
+  border: 1px solid var(--border);
+  overflow: hidden;
+}
+
+/* Flat edges when maximized (no desktop gap to delineate) */
+body.maximized .window {
+  border: none;
 }
 
 /* Titlebar (native decorations are off) */
@@ -124,17 +148,12 @@ body {
   color: var(--fg);
 }
 
-.brand {
-  font-size: 12px;
-  font-weight: 600;
-  color: var(--fg-dim);
-}
-
 .titlebar-title {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
   font-size: 12px;
+  font-weight: 600;
   color: var(--fg-dim);
   pointer-events: none;
 }
@@ -253,11 +272,6 @@ body {
   cursor: pointer;
 }
 
-/* New-group button drops to its own full-width row */
-.sidebar-header #new-group {
-  flex-basis: 100%;
-}
-
 .sidebar-header button:hover {
   border-color: var(--accent);
   color: var(--accent);
@@ -332,11 +346,11 @@ body {
 }
 
 .session-row:hover {
-  background: var(--accent-bg);
+  background: color-mix(in srgb, var(--fg) 8%, transparent);
 }
 
 .session-row.active {
-  background: var(--accent-bg);
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
   color: var(--fg);
 }
 
@@ -381,8 +395,25 @@ body {
   background: transparent;
 }
 
+/* needs attention / finished a turn */
 .session-row.has-attention .s-badge {
+  background: #f4b45a;
+}
+
+/* actively producing output */
+.session-row.working .s-badge {
   background: var(--accent);
+  animation: badge-pulse 1s ease-in-out infinite;
+}
+
+@keyframes badge-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.3;
+  }
 }
 
 /* Cold sessions: restored across a restart, not yet resumed */
@@ -450,7 +481,8 @@ body.dragging {
   box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
 }
 
-.context-menu button {
+.context-menu button,
+.context-parent-btn {
   display: block;
   width: 100%;
   text-align: left;
@@ -463,7 +495,20 @@ body.dragging {
   cursor: pointer;
 }
 
-.context-menu button:hover {
+.context-parent-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.context-chevron {
+  color: var(--fg-dim);
+  font-size: 11px;
+}
+
+.context-menu button:hover,
+.context-parent:hover > .context-parent-btn {
   background: var(--accent-bg);
 }
 
@@ -476,6 +521,41 @@ body.dragging {
   height: 1px;
   background: var(--border);
   margin: 4px 2px;
+}
+
+/* Fly-out submenu (Move to group) */
+.context-parent {
+  position: relative;
+}
+
+.context-parent > .context-submenu {
+  position: absolute;
+  left: 100%;
+  top: -5px;
+  margin-left: 2px;
+  min-width: 160px;
+  max-height: 320px;
+  overflow-y: auto;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 4px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  display: none;
+  z-index: 61;
+}
+
+.context-parent:hover > .context-submenu {
+  display: block;
+}
+
+.context-submenu.submenu-left {
+  left: auto;
+  right: 100%;
+  margin-left: 0;
+  margin-right: 2px;
+  top: auto;
+  bottom: -5px;
 }
 
 #main {
@@ -493,6 +573,27 @@ body.dragging {
 .terminal-host {
   position: absolute;
   inset: 6px;
+}
+
+/* Shown while an OS file is dragged over the window */
+.drop-overlay {
+  position: absolute;
+  inset: 6px;
+  z-index: 40;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--accent);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+  color: var(--fg);
+  font-size: 14px;
+  font-weight: 600;
+  pointer-events: none;
+}
+
+.drop-overlay[hidden] {
+  display: none;
 }
 
 #empty {
@@ -894,24 +995,225 @@ body.sidebar-collapsed #sidebar {
   display: none;
 }
 
-/* Dev-build tint on the New button, so a dev window is obvious */
+/* Dev build: amber titlebar + label so it's never confused with the release */
+body.dev .titlebar {
+  background: #5c3d10;
+}
+
+body.dev #titlebar-title::after {
+  content: " · dev";
+  color: #f4b45a;
+  font-weight: 700;
+}
+
 body.dev #new-session {
   color: #e8a04a;
   border-color: #e8a04a;
 }
 
-/* Settings */
-.set-row {
-  display: flex;
-  gap: 8px;
+/* Settings (tabbed, mandor-style) */
+#settings-modal {
   align-items: center;
 }
 
-.set-row .ns-dd-btn {
-  flex: 1;
+.settings-dialog {
+  display: flex;
+  width: min(720px, 92vw);
+  height: min(520px, 86vh);
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  overflow: hidden;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  position: relative;
 }
 
-.about-info {
+.settings-nav {
+  flex: none;
+  width: 170px;
+  background: var(--bg-alt);
+  border-right: 1px solid var(--border);
+  padding: 14px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.settings-title {
+  font-weight: 700;
+  color: var(--fg);
+  padding: 4px 8px 10px;
+}
+
+.settings-tab {
+  text-align: left;
+  background: transparent;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 13px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.settings-tab:hover {
+  color: var(--fg);
+  background: var(--accent-bg);
+}
+
+.settings-tab.active {
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+
+.settings-content {
+  position: relative;
+  flex: 1;
+  padding: 22px 24px;
+  overflow-y: auto;
+}
+
+.settings-x {
+  position: absolute;
+  top: 12px;
+  right: 14px;
+  background: transparent;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 15px;
+  cursor: pointer;
+}
+
+.settings-x:hover {
+  color: var(--fg);
+}
+
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 18px;
+}
+
+.settings-section[hidden] {
+  display: none;
+}
+
+.set-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.set-label {
+  font-size: 12px;
+  color: var(--fg);
+  font-weight: 700;
+}
+
+.set-hint {
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.set-check {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  font-size: 12px;
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.set-dir-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.set-dir-path {
+  flex: 1;
+  font-size: 11px;
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.set-groups {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.set-group-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.set-group-name-input {
+  flex: none;
+  width: 120px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 700;
+  padding: 4px 7px;
+}
+
+.set-group-name-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.set-group-dir {
+  flex: 1;
+  font-size: 11px;
+  color: var(--fg-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.set-ghost {
+  flex: none;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font-size: 12px;
+  padding: 5px 10px;
+  cursor: pointer;
+}
+
+.set-ghost:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+
+.about-head {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.about-name {
+  font-size: 20px;
+  font-weight: 700;
+  color: var(--fg);
+}
+
+.about-version {
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+
+.about-desc {
   font-size: 12px;
   color: var(--fg-dim);
 }

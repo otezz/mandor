@@ -26,12 +26,13 @@ let sidebarCollapsed = false;
 let appFocused = true;
 let notificationsEnabled = true;
 let settings = {
-  theme: "auto",
+  theme: "frappe",
   defaultCwd: "",
   claudePath: "",
   notifications: true,
   defaultModel: "",
   terminalFontSize: 13,
+  scrollSensitivity: 5,
   remoteByDefault: false,
 };
 
@@ -50,6 +51,12 @@ function base64ToBytes(b64) {
 function baseName(cwd) {
   const parts = cwd.replace(/\/+$/, "").split("/");
   return parts[parts.length - 1] || cwd;
+}
+
+// Centered titlebar text: app name, plus the active session when there is one.
+function updateTitle() {
+  const s = sessions.get(activeId);
+  titleEl.textContent = s ? `mandor-term — ${s.name}` : "mandor-term";
 }
 
 // --- theme: keep xterm colors in sync with the chrome (light/dark) ---
@@ -77,6 +84,7 @@ function persist() {
       cwd: s.cwd,
       name: s.name,
       groupId: s.groupId ?? null,
+      wantRemote: !!s.wantRemote,
     }));
   try {
     localStorage.setItem(
@@ -104,6 +112,9 @@ function loadStore() {
     sidebarCollapsed = !!data.sidebarCollapsed;
     if (data.settings && typeof data.settings === "object")
       settings = { ...settings, ...data.settings };
+    // migrate old/unknown theme values (auto/light/dark) to a Catppuccin flavor
+    if (!["latte", "frappe", "macchiato", "mocha"].includes(settings.theme))
+      settings.theme = "frappe";
     savedSessions = Array.isArray(data.sessions) ? data.sessions : [];
   } catch (e) {
     console.error(e);
@@ -286,11 +297,13 @@ function buildRow(s) {
   if (s.id === activeId) row.classList.add("active");
   if (s.exited) row.classList.add("exited");
   else if (!s.live) row.classList.add("cold"); // restored, not yet resumed
-  if (s.attention) row.classList.add("has-attention");
+  const bg = s.id !== activeId;
+  if (bg && s.attention) row.classList.add("has-attention");
+  else if (bg && s.working) row.classList.add("working");
   row.dataset.id = s.id;
 
   const badge = document.createElement("span");
-  badge.className = "s-badge"; // attention dot (shown via .has-attention)
+  badge.className = "s-badge"; // activity/attention dot (working / has-attention)
   const name = document.createElement("span");
   name.className = "s-name";
   name.textContent = s.name + (s.exited ? " (exited)" : "");
@@ -504,7 +517,7 @@ function editInline(el, current, commit) {
 function startRenameSession(s, el) {
   editInline(el, s.name, (v) => {
     s.name = v;
-    if (s.id === activeId) titleEl.textContent = v;
+    if (s.id === activeId) updateTitle();
     persist();
   });
 }
@@ -542,25 +555,27 @@ function openContextMenu(e, kind, id) {
     });
     items.push({ label: "Open in new window", run: () => popOutSession(id) });
     items.push({ sep: true });
-    if (s.groupId != null)
-      items.push({
-        label: "Move to Ungrouped",
+    const moveTo = [
+      {
+        label: "Ungrouped",
+        current: s.groupId == null,
         run: () => moveSession(id, null),
-      });
-    for (const g of groups) {
-      if (g.id === s.groupId) continue;
-      items.push({
-        label: `Move to ${g.name}`,
-        run: () => moveSession(id, g.id),
-      });
-    }
-    items.push({
-      label: "New group with this…",
-      run: () => {
-        const g = createGroup();
-        moveSession(id, g.id);
       },
-    });
+      ...groups.map((g) => ({
+        label: g.name,
+        current: g.id === s.groupId,
+        run: () => moveSession(id, g.id),
+      })),
+      { sep: true },
+      {
+        label: "New group…",
+        run: () => {
+          const g = createGroup();
+          moveSession(id, g.id);
+        },
+      },
+    ];
+    items.push({ label: "Move to group", submenu: moveTo });
     items.push({ sep: true });
     items.push({
       label: "Close session",
@@ -595,23 +610,45 @@ function openContextMenu(e, kind, id) {
     items.push({ label: "New group", run: createGroupAndRename });
   }
 
-  const menu = document.createElement("div");
-  menu.className = "context-menu";
-  for (const item of items) {
+  const mkButton = (item, container) => {
     if (item.sep) {
       const sep = document.createElement("div");
       sep.className = "context-sep";
-      menu.appendChild(sep);
-      continue;
+      container.appendChild(sep);
+      return;
     }
     const btn = document.createElement("button");
-    btn.textContent = item.label;
+    btn.textContent = item.label + (item.current ? "  ✓" : "");
     if (item.danger) btn.className = "danger";
     btn.addEventListener("click", () => {
       closeContextMenu();
       item.run();
     });
-    menu.appendChild(btn);
+    container.appendChild(btn);
+  };
+
+  const menu = document.createElement("div");
+  menu.className = "context-menu";
+  for (const item of items) {
+    if (item.submenu) {
+      const parent = document.createElement("div");
+      parent.className = "context-parent";
+      const btn = document.createElement("button");
+      btn.className = "context-parent-btn";
+      const lbl = document.createElement("span");
+      lbl.textContent = item.label;
+      const chev = document.createElement("span");
+      chev.className = "context-chevron";
+      chev.textContent = "▸";
+      btn.append(lbl, chev);
+      const sub = document.createElement("div");
+      sub.className = "context-submenu";
+      for (const si of item.submenu) mkButton(si, sub);
+      parent.append(btn, sub);
+      menu.appendChild(parent);
+      continue;
+    }
+    mkButton(item, menu);
   }
 
   document.body.appendChild(menu);
@@ -620,6 +657,11 @@ function openContextMenu(e, kind, id) {
   const y = Math.min(e.clientY, window.innerHeight - rect.height - 6);
   menu.style.left = `${Math.max(6, x)}px`;
   menu.style.top = `${Math.max(6, y)}px`;
+  // Flip submenus leftward if the menu is near the right edge.
+  if (x + rect.width + 180 > window.innerWidth) {
+    for (const sub of menu.querySelectorAll(".context-submenu"))
+      sub.classList.add("submenu-left");
+  }
   contextMenuEl = menu;
 }
 
@@ -665,12 +707,25 @@ function attachTerminal(s) {
     fontSize: settings.terminalFontSize || 13,
     cursorBlink: true,
     scrollback: 5000,
+    scrollSensitivity: settings.scrollSensitivity || 5,
+    fastScrollSensitivity: (settings.scrollSensitivity || 5) * 2,
     allowProposedApi: true,
     theme: xtermTheme(),
   });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
   term.open(el);
+  // Let app shortcuts (Ctrl/Cmd + , = - _) reach the document handler instead of
+  // being sent to the PTY.
+  term.attachCustomKeyEventHandler((ev) => {
+    if (
+      ev.type === "keydown" &&
+      (ev.ctrlKey || ev.metaKey) &&
+      [",", "=", "+", "-", "_"].includes(ev.key)
+    )
+      return false;
+    return true;
+  });
   s.term = term;
   s.fit = fit;
   s.el = el;
@@ -680,24 +735,51 @@ function attachTerminal(s) {
   term.onResize(({ cols, rows }) =>
     invoke("resize_pty", { id: s.id, cols, rows }).catch(() => {}),
   );
-  // claude rings the terminal bell when a turn finishes / it needs input.
   // (optional-chained: guard against older xterm builds without onBell)
-  term.onBell?.(() => onAttention(s));
+  term.onBell?.(() => onBell(s));
 }
 
-// A session wants attention (bell): flag its sidebar row when it's in the
-// background, and notify if the window is unfocused.
-function onAttention(s) {
-  if (s.id !== activeId) {
-    s.attention = true;
-    const row = listEl.querySelector(`.session-row[data-id="${s.id}"]`);
-    if (row) row.classList.add("has-attention");
-    else renderSessionList();
+// Sidebar activity indicator. We don't parse the stream, so state is inferred
+// from PTY output: while claude streams output the session is "working" (blue
+// pulse); when output stops (or the bell rings) a background session flips to
+// "needs attention" (amber) — meaning it finished a turn / is waiting for you.
+function refreshBadge(s) {
+  const row = listEl.querySelector(`.session-row[data-id="${s.id}"]`);
+  if (!row) return;
+  const bg = s.id !== activeId;
+  row.classList.toggle("has-attention", bg && !!s.attention);
+  row.classList.toggle("working", bg && !!s.working && !s.attention);
+}
+
+function markWorking(s) {
+  if (!s.working) {
+    s.working = true;
+    s.attention = false;
+    refreshBadge(s);
   }
+  clearTimeout(s.workTimer);
+  s.workTimer = setTimeout(() => {
+    s.working = false;
+    if (s.id !== activeId) s.attention = true; // dot only for background sessions
+    notifyAttention(s); // but notify for any session (guarded by unfocused)
+    refreshBadge(s);
+  }, 900);
+}
+
+// Terminal bell — claude rings it when a turn finishes / it needs input.
+function onBell(s) {
+  clearTimeout(s.workTimer);
+  s.working = false;
+  if (s.id !== activeId) s.attention = true;
+  notifyAttention(s);
+  refreshBadge(s);
+}
+
+function notifyAttention(s) {
   if (!appFocused && notificationsEnabled) {
     invoke("notify", {
       title: s.name,
-      body: "Claude needs your attention",
+      body: "Claude finished / needs input",
     }).catch(() => {});
   }
 }
@@ -719,12 +801,12 @@ async function spawnSession(s) {
     model: null,
     remoteControl: false,
   };
+  args.remoteControl = !!s.wantRemote; // applies to new and resumed alike
   if (s.spawnMode === "new") {
     args.sessionId = s.id;
     args.name = s.name;
     args.worktree = s.wantWorktree;
     args.model = s.wantModel || null;
-    args.remoteControl = !!s.wantRemote;
   } else {
     args.resume = s.id;
   }
@@ -751,8 +833,9 @@ function setActive(id) {
   for (const row of listEl.querySelectorAll(".session-row")) {
     row.classList.toggle("active", row.dataset.id === id);
   }
+  for (const x of sessions.values()) refreshBadge(x); // badges are relative to active
   emptyEl.style.display = sessions.size ? "none" : "flex";
-  titleEl.textContent = s ? s.name : "";
+  updateTitle();
   if (s && s.term) {
     s.fit.fit(); // size before spawn so the PTY opens at the right dimensions
     s.term.focus();
@@ -802,9 +885,12 @@ function startSession(cwd, opts = {}) {
     spawnMode: isResume ? "resume" : "new",
     wantWorktree: opts.worktree,
     wantModel: opts.model,
-    wantRemote: opts.remoteControl,
+    // resume has no checkbox — fall back to the "remote by default" setting
+    wantRemote:
+      "remoteControl" in opts ? opts.remoteControl : settings.remoteByDefault,
     live: false,
   });
+  addRecentDir(cwd); // remember the directory for the new-session picker
   renderSessionList();
   persist();
   setActive(id); // attaches, sizes, and spawns
@@ -846,7 +932,7 @@ async function closeSession(id) {
     if (next) setActive(next);
     else {
       emptyEl.style.display = "flex";
-      titleEl.textContent = "";
+      updateTitle();
     }
   }
   renderSessionList();
@@ -927,7 +1013,9 @@ async function runPopout() {
 // --- PTY event routing ---
 listen("pty-output", ({ payload }) => {
   const s = sessions.get(payload.id);
-  if (s && s.term) s.term.write(base64ToBytes(payload.b64));
+  if (!s || !s.term) return;
+  s.term.write(base64ToBytes(payload.b64));
+  if (!POPOUT) markWorking(s); // drive the sidebar activity indicator
 });
 
 listen("pty-exit", ({ payload }) => {
@@ -1250,7 +1338,6 @@ async function createFromModal() {
   const model = newSessionModel;
   const remoteControl = nsRemote.checked;
   closeNewModal();
-  addRecentDir(cwd);
   startSession(cwd, { name, groupId, worktree, model, remoteControl });
 }
 
@@ -1354,10 +1441,22 @@ document
   .getElementById("resume-backdrop")
   .addEventListener("click", closeResume);
 document.addEventListener("keydown", (e) => {
-  if ((e.ctrlKey || e.metaKey) && e.key === ",") {
-    e.preventDefault();
-    openSettings();
-    return;
+  if (e.ctrlKey || e.metaKey) {
+    if (e.key === ",") {
+      e.preventDefault();
+      openSettings();
+      return;
+    }
+    if (e.key === "=" || e.key === "+") {
+      e.preventDefault();
+      changeFontSize(1);
+      return;
+    }
+    if (e.key === "-" || e.key === "_") {
+      e.preventDefault();
+      changeFontSize(-1);
+      return;
+    }
   }
   if (e.key !== "Escape") return;
   if (!resumeModal.hidden) closeResume();
@@ -1405,6 +1504,7 @@ async function syncMaxIcon() {
   const max = await invoke("is_maximized").catch(() => false);
   winMax.innerHTML = max ? RESTORE_ICON : MAX_ICON;
   winMax.title = max ? "Restore" : "Maximize";
+  document.body.classList.toggle("maximized", max); // flatten the window border
 }
 
 document
@@ -1431,13 +1531,28 @@ appWindow.onFocusChanged(({ payload }) => {
   appFocused = payload;
 });
 
+// Dropping OS files onto the window types their path(s) into the active session
+// (Tauri intercepts native file drops, so HTML5 dnd events don't fire here).
+const dropOverlay = document.getElementById("drop-overlay");
+appWindow.onDragDropEvent((event) => {
+  const p = event.payload;
+  if (p.type === "enter" || p.type === "over") {
+    dropOverlay.hidden = !activeId; // only when there's a terminal to drop into
+    return;
+  }
+  dropOverlay.hidden = true; // drop / leave / cancel
+  if (p.type !== "drop" || !Array.isArray(p.paths) || !p.paths.length) return;
+  if (!activeId) return;
+  const text =
+    p.paths.map((path) => (/\s/.test(path) ? `"${path}"` : path)).join(" ") +
+    " ";
+  invoke("write_pty", { id: activeId, data: text }).catch(() => {});
+});
+
 document
   .getElementById("new-session")
   .addEventListener("click", () => openNewSession());
 document.getElementById("resume-session").addEventListener("click", openResume);
-document
-  .getElementById("new-group")
-  .addEventListener("click", createGroupAndRename);
 invoke("is_dev").then((dev) => document.body.classList.toggle("dev", !!dev));
 
 // --- close-session confirmation ---
@@ -1500,13 +1615,14 @@ for (const grip of document.querySelectorAll(".resizer")) {
 
 // --- settings ---
 const settingsModal = document.getElementById("settings-modal");
-const setDefcwdLabel = document.getElementById("set-defcwd-label");
+const setDefcwdPath = document.getElementById("set-defcwd");
 const setThemeMenu = document.getElementById("set-theme-menu");
 const setThemeLabel = document.getElementById("set-theme-label");
 const THEME_OPTIONS = [
-  { value: "auto", label: "Auto (match system)" },
-  { value: "light", label: "Light" },
-  { value: "dark", label: "Dark" },
+  { value: "latte", label: "Latte (light)" },
+  { value: "frappe", label: "Frappé" },
+  { value: "macchiato", label: "Macchiato" },
+  { value: "mocha", label: "Mocha" },
 ];
 
 function themeLabel(value) {
@@ -1534,11 +1650,7 @@ function buildThemeMenu() {
 }
 
 function applyTheme() {
-  if (settings.theme === "light" || settings.theme === "dark") {
-    document.documentElement.dataset.theme = settings.theme;
-  } else {
-    delete document.documentElement.dataset.theme; // auto → follow system
-  }
+  document.documentElement.dataset.theme = settings.theme;
   const theme = xtermTheme();
   for (const s of sessions.values()) if (s.term) s.term.options.theme = theme;
 }
@@ -1547,9 +1659,19 @@ function applySettings() {
   notificationsEnabled = settings.notifications !== false;
   applyTheme();
   applyTerminalFontSize();
+  applyScrollSensitivity();
   invoke("set_claude_path", { path: settings.claudePath || null }).catch(
     () => {},
   );
+}
+
+function applyScrollSensitivity() {
+  const n = settings.scrollSensitivity || 5;
+  for (const s of sessions.values()) {
+    if (!s.term) continue;
+    s.term.options.scrollSensitivity = n;
+    s.term.options.fastScrollSensitivity = n * 2;
+  }
 }
 
 function applyTerminalFontSize() {
@@ -1561,13 +1683,99 @@ function applyTerminalFontSize() {
   }
 }
 
+// Ctrl/Cmd +/- : bump the terminal font size (clamped), live + persisted.
+function changeFontSize(delta) {
+  const cur = settings.terminalFontSize || 13;
+  const next = Math.min(24, Math.max(8, cur + delta));
+  if (next === cur) return;
+  settings.terminalFontSize = next;
+  applyTerminalFontSize();
+  const fs = document.getElementById("set-fontsize");
+  if (fs) fs.value = next;
+  persist();
+}
+
 function setDefCwdLabelText() {
-  if (settings.defaultCwd) {
-    setDefcwdLabel.textContent = settings.defaultCwd;
-    setDefcwdLabel.classList.remove("placeholder");
-  } else {
-    setDefcwdLabel.textContent = "None";
-    setDefcwdLabel.classList.add("placeholder");
+  setDefcwdPath.textContent = settings.defaultCwd || "— none —";
+  setDefcwdPath.title = settings.defaultCwd || "";
+}
+
+function showSettingsSection(section) {
+  for (const tab of settingsModal.querySelectorAll(".settings-tab"))
+    tab.classList.toggle("active", tab.dataset.section === section);
+  for (const sec of settingsModal.querySelectorAll(".settings-section"))
+    sec.hidden = sec.dataset.section !== section;
+}
+
+// Ghost button used in the settings group manager.
+function ghostBtn(label, onClick) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = "set-ghost";
+  b.textContent = label;
+  b.addEventListener("click", onClick);
+  return b;
+}
+
+function renderSettingsGroups() {
+  const box = document.getElementById("set-groups");
+  box.replaceChildren();
+  if (!groups.length) {
+    box.appendChild(
+      Object.assign(document.createElement("div"), {
+        className: "set-hint",
+        textContent: "No groups yet.",
+      }),
+    );
+    return;
+  }
+  for (const g of groups) {
+    const row = document.createElement("div");
+    row.className = "set-group-row";
+    const name = document.createElement("input");
+    name.className = "set-group-name-input";
+    name.value = g.name;
+    name.spellcheck = false;
+    name.addEventListener("change", () => {
+      const v = name.value.trim();
+      if (v) {
+        g.name = v;
+        persist();
+        renderSessionList();
+      } else {
+        name.value = g.name;
+      }
+    });
+    const dir = Object.assign(document.createElement("span"), {
+      className: "set-group-dir",
+      textContent: g.dir || "— no folder —",
+      title: g.dir || "",
+    });
+    row.append(
+      name,
+      dir,
+      ghostBtn(g.dir ? "Change" : "Set folder", async () => {
+        await setGroupDir(g);
+        renderSettingsGroups();
+      }),
+    );
+    if (g.dir) {
+      row.append(
+        ghostBtn("Clear", () => {
+          g.dir = null;
+          persist();
+          renderSessionList();
+          renderSettingsGroups();
+        }),
+      );
+    }
+    row.append(
+      ghostBtn("Delete", () => {
+        deleteGroup(g.id);
+        renderSettingsGroups();
+      }),
+    );
+    box.appendChild(row);
   }
 }
 
@@ -1577,15 +1785,18 @@ function openSettings() {
   document.getElementById("set-claude-path").value = settings.claudePath;
   document.getElementById("set-fontsize").value =
     settings.terminalFontSize || 13;
+  document.getElementById("set-scroll").value = settings.scrollSensitivity || 5;
   document.getElementById("set-notifications").checked =
     settings.notifications !== false;
   document.getElementById("set-remote-default").checked =
     !!settings.remoteByDefault;
   setDefCwdLabelText();
+  renderSettingsGroups();
+  showSettingsSection("appearance");
   invoke("app_info")
     .then((info) => {
-      document.getElementById("about-info").textContent =
-        `mandor-term v${info.version} — ${info.description}`;
+      document.getElementById("about-version").textContent = `v${info.version}`;
+      document.getElementById("about-desc").textContent = info.description;
     })
     .catch(() => {});
   settingsModal.hidden = false;
@@ -1594,6 +1805,20 @@ function openSettings() {
 function closeSettings() {
   settingsModal.hidden = true;
 }
+
+for (const tab of document.querySelectorAll(".settings-tab"))
+  tab.addEventListener("click", () => showSettingsSection(tab.dataset.section));
+document.getElementById("set-add-group").addEventListener("click", () => {
+  createGroup();
+  renderSettingsGroups();
+  // focus the new group's name so it can be renamed immediately
+  const inputs = document.querySelectorAll("#set-groups .set-group-name-input");
+  const last = inputs[inputs.length - 1];
+  if (last) {
+    last.focus();
+    last.select();
+  }
+});
 
 document.getElementById("set-theme-btn").addEventListener("click", (e) => {
   e.stopPropagation();
@@ -1629,6 +1854,13 @@ document.getElementById("set-fontsize").addEventListener("change", (e) => {
   applyTerminalFontSize();
   persist();
 });
+document.getElementById("set-scroll").addEventListener("change", (e) => {
+  const n = parseInt(e.target.value, 10);
+  settings.scrollSensitivity = Math.min(20, Math.max(1, isNaN(n) ? 5 : n));
+  e.target.value = settings.scrollSensitivity;
+  applyScrollSensitivity();
+  persist();
+});
 document
   .getElementById("set-defcwd-btn")
   .addEventListener("click", async () => {
@@ -1656,9 +1888,6 @@ document.getElementById("set-defcwd-clear").addEventListener("click", () => {
 });
 document
   .getElementById("settings-close")
-  .addEventListener("click", closeSettings);
-document
-  .getElementById("settings-done")
   .addEventListener("click", closeSettings);
 document
   .getElementById("settings-backdrop")
