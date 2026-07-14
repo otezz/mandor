@@ -495,7 +495,8 @@ body.dragging {
   cursor: pointer;
 }
 
-.context-parent-btn {
+/* higher specificity than `.context-menu button` so the flex layout wins */
+.context-menu .context-parent-btn {
   display: flex;
   align-items: center;
   justify-content: space-between;
