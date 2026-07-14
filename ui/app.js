@@ -714,20 +714,41 @@ function attachTerminal(s) {
   });
   const fit = new FitAddon.FitAddon();
   term.loadAddon(fit);
+  const search = new SearchAddon.SearchAddon();
+  term.loadAddon(search);
   term.open(el);
-  // Let app shortcuts (Ctrl/Cmd + , = - _) reach the document handler instead of
-  // being sent to the PTY.
+  // Let app shortcuts reach the document handler instead of the PTY:
+  // Ctrl/Cmd + , = - _  and  Ctrl/Cmd+Shift+F (find in session).
   term.attachCustomKeyEventHandler((ev) => {
+    if (ev.type !== "keydown") return true;
     if (
-      ev.type === "keydown" &&
       (ev.ctrlKey || ev.metaKey) &&
+      ev.shiftKey &&
+      (ev.key === "F" || ev.key === "f")
+    )
+      return false;
+    if (
+      (ev.ctrlKey || ev.metaKey) &&
+      !ev.shiftKey &&
       [",", "=", "+", "-", "_"].includes(ev.key)
     )
       return false;
     return true;
   });
+  search.onDidChangeResults((r) => {
+    if (s.id !== activeId) return;
+    if (!r || r.resultCount === 0) {
+      findCount.textContent = findInput.value ? "no results" : "";
+    } else {
+      findCount.textContent =
+        r.resultIndex >= 0
+          ? `${r.resultIndex + 1}/${r.resultCount}`
+          : `${r.resultCount} found`;
+    }
+  });
   s.term = term;
   s.fit = fit;
+  s.search = search;
   s.el = el;
   term.onData((data) =>
     invoke("write_pty", { id: s.id, data }).catch(() => {}),
@@ -1451,6 +1472,12 @@ document
   .addEventListener("click", closeResume);
 document.addEventListener("keydown", (e) => {
   if (e.ctrlKey || e.metaKey) {
+    if (e.shiftKey && (e.key === "F" || e.key === "f")) {
+      e.preventDefault();
+      openFind();
+      return;
+    }
+    if (e.shiftKey) return; // don't treat other shifted combos below
     if (e.key === ",") {
       e.preventDefault();
       openSettings();
@@ -1468,6 +1495,7 @@ document.addEventListener("keydown", (e) => {
     }
   }
   if (e.key !== "Escape") return;
+  if (!findBar.hidden) closeFind();
   if (!resumeModal.hidden) closeResume();
   if (!closeModal.hidden) closeCloseModal();
   if (!settingsModal.hidden) closeSettings();
@@ -1901,6 +1929,67 @@ document
 document
   .getElementById("settings-backdrop")
   .addEventListener("click", closeSettings);
+
+// --- find in session (Ctrl/Cmd+Shift+F) ---
+const findBar = document.getElementById("find-bar");
+const findInput = document.getElementById("find-input");
+const findCount = document.getElementById("find-count");
+const FIND_OPTS = {
+  decorations: {
+    matchBackground: "#5c4a1a",
+    matchBorder: "#f4b45a",
+    matchOverviewRuler: "#f4b45a",
+    activeMatchBackground: "#f4b45a",
+    activeMatchBorder: "#f4b45a",
+    activeMatchColorOverviewRuler: "#f4b45a",
+  },
+};
+
+function runFind(prev) {
+  const s = sessions.get(activeId);
+  if (!s || !s.search) return;
+  const q = findInput.value;
+  if (!q) {
+    s.search.clearDecorations?.();
+    findCount.textContent = "";
+    return;
+  }
+  if (prev) s.search.findPrevious(q, FIND_OPTS);
+  else s.search.findNext(q, FIND_OPTS);
+}
+
+function openFind() {
+  if (!activeId) return;
+  findBar.hidden = false;
+  findInput.focus();
+  findInput.select();
+  if (findInput.value) runFind(false);
+}
+
+function closeFind() {
+  findBar.hidden = true;
+  const s = sessions.get(activeId);
+  s?.search?.clearDecorations?.();
+  s?.term?.focus();
+}
+
+findInput.addEventListener("input", () => runFind(false));
+findInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    runFind(e.shiftKey);
+  } else if (e.key === "Escape") {
+    e.preventDefault();
+    closeFind();
+  }
+});
+document
+  .getElementById("find-next")
+  .addEventListener("click", () => runFind(false));
+document
+  .getElementById("find-prev")
+  .addEventListener("click", () => runFind(true));
+document.getElementById("find-close").addEventListener("click", closeFind);
 
 if (POPOUT) runPopout();
 else restore();

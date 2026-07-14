@@ -8,6 +8,7 @@
     <link rel="stylesheet" href="styles.css" />
     <script src="vendor/xterm.js" defer></script>
     <script src="vendor/addon-fit.js" defer></script>
+    <script src="vendor/addon-search.js" defer></script>
     <script src="app.js" type="module"></script>
   </head>
   <body>
@@ -99,6 +100,40 @@
           <div id="session-list"></div>
         </aside>
         <main id="main">
+          <div id="find-bar" class="find-bar" hidden>
+            <input
+              id="find-input"
+              class="find-input"
+              type="text"
+              spellcheck="false"
+              placeholder="Find in session…"
+            />
+            <span id="find-count" class="find-count"></span>
+            <button
+              id="find-prev"
+              class="find-btn"
+              type="button"
+              title="Previous (Shift+Enter)"
+            >
+              ↑
+            </button>
+            <button
+              id="find-next"
+              class="find-btn"
+              type="button"
+              title="Next (Enter)"
+            >
+              ↓
+            </button>
+            <button
+              id="find-close"
+              class="find-btn"
+              type="button"
+              title="Close (Esc)"
+            >
+              ✕
+            </button>
+          </div>
           <div id="terminals"></div>
           <div id="drop-overlay" class="drop-overlay" hidden>
             <span>Drop file to add its path</span>

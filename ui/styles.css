@@ -576,6 +576,63 @@ body.dragging {
   inset: 6px;
 }
 
+/* Find-in-session bar */
+.find-bar {
+  position: absolute;
+  top: 8px;
+  right: 14px;
+  z-index: 45;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 5px 8px;
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+}
+
+.find-bar[hidden] {
+  display: none;
+}
+
+.find-input {
+  width: 180px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg);
+  font-size: 12px;
+  padding: 4px 7px;
+  outline: none;
+}
+
+.find-input:focus {
+  border-color: var(--accent);
+}
+
+.find-count {
+  min-width: 44px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--fg-dim);
+}
+
+.find-btn {
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 12px;
+  padding: 2px 5px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.find-btn:hover {
+  background: var(--accent-bg);
+  color: var(--fg);
+}
+
 /* Shown while an OS file is dragged over the window */
 .drop-overlay {
   position: absolute;
