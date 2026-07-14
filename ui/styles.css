@@ -633,6 +633,28 @@ body.dragging {
   color: var(--fg);
 }
 
+/* Transient font-size indicator (Ctrl/Cmd +/-) */
+.font-hud {
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 46;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+  pointer-events: none;
+}
+
+.font-hud[hidden] {
+  display: none;
+}
+
 /* Shown while an OS file is dragged over the window */
 .drop-overlay {
   position: absolute;
@@ -923,6 +945,39 @@ body.dragging {
   white-space: nowrap;
 }
 
+/* Recent-directory row: clickable info + a hover ✕ to forget it */
+.ns-recent {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ns-recent-info {
+  flex: 1;
+  min-width: 0;
+  cursor: pointer;
+}
+
+.ns-recent-remove {
+  flex: none;
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 15px;
+  line-height: 1;
+  padding: 0 3px;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.ns-recent:hover .ns-recent-remove {
+  opacity: 1;
+}
+
+.ns-recent-remove:hover {
+  color: var(--red);
+}
+
 .ns-menu-sep {
   height: 1px;
   background: var(--border);
@@ -953,6 +1008,15 @@ body.dragging {
 
 .ns-existing-item:hover {
   background: var(--accent-bg);
+}
+
+.nse-name {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--fg);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .nse-preview {

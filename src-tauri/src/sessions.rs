@@ -11,8 +11,12 @@ use serde_json::Value;
 /// when the picker opens. Sessions older than the newest `SCAN_LIMIT` by mtime
 /// won't appear (use the filter box to narrow what does).
 const SCAN_LIMIT: usize = 500;
-/// Transcript header lines to read when extracting cwd + first message.
-const HEAD_LINES: usize = 80;
+/// Max lines to scan per transcript. cwd + the first message sit at the very
+/// top, but the session's display name (a `custom-title` entry) can be written
+/// at any point — well past a small header — so we read further to catch it,
+/// bounded to keep the off-thread picker scan snappy. Parsing is gated: past the
+/// cwd+preview point we only parse the cheap `custom-title` lines.
+const SCAN_LINES: usize = 20_000;
 const PREVIEW_CHARS: usize = 100;
 
 #[derive(Serialize)]
@@ -20,6 +24,7 @@ pub struct SessionInfo {
     id: String,
     cwd: String,
     preview: String,
+    name: String, // the session's -n display name (customTitle), "" if none
     mtime: u64,
 }
 
@@ -74,32 +79,53 @@ fn scan_sessions() -> Vec<SessionInfo> {
         let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        let Some((cwd, preview)) = transcript_head(&path) else {
+        let Some((cwd, preview, name)) = transcript_head(&path) else {
             continue;
         };
         out.push(SessionInfo {
             id: id.to_string(),
             cwd,
             preview,
+            name,
             mtime,
         });
     }
     out
 }
 
-/// Read a transcript's header for its session cwd and first real user message.
-/// Skips command/system-reminder envelope messages, like `cs`'s jq filter.
-fn transcript_head(path: &PathBuf) -> Option<(String, String)> {
+/// Read a transcript for its cwd, first real user message, and the session's
+/// display name (`customTitle`, set via `-n` and stored on `custom-title`
+/// entries). cwd + preview are near the top; the name can appear much later, so
+/// we scan on (bounded by `SCAN_LINES`) and keep the last name seen (the current
+/// one). Skips command/system-reminder/bash envelope messages, like `cs`'s jq
+/// filter. Parsing is gated: once cwd+preview are known we only parse the cheap
+/// `custom-title` lines, so unnamed sessions cost little beyond the head.
+fn transcript_head(path: &PathBuf) -> Option<(String, String, String)> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
 
     let mut cwd: Option<String> = None;
     let mut preview: Option<String> = None;
+    let mut name = String::new();
 
-    for line in reader.lines().take(HEAD_LINES).map_while(Result::ok) {
+    for line in reader.lines().take(SCAN_LINES).map_while(Result::ok) {
+        let need_meta = cwd.is_none() || preview.is_none();
+        let is_title = line.contains("\"type\":\"custom-title\"");
+        if !need_meta && !is_title {
+            continue;
+        }
         let Ok(entry) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        if is_title {
+            if let Some(t) = entry.get("customTitle").and_then(Value::as_str) {
+                let t = t.trim();
+                if !t.is_empty() {
+                    name = t.to_string();
+                }
+            }
+            continue;
+        }
         if cwd.is_none() {
             if let Some(c) = entry.get("cwd").and_then(Value::as_str) {
                 if !c.is_empty() {
@@ -112,12 +138,9 @@ fn transcript_head(path: &PathBuf) -> Option<(String, String)> {
                 preview = Some(text);
             }
         }
-        if cwd.is_some() && preview.is_some() {
-            break;
-        }
     }
 
-    Some((cwd?, preview?))
+    Some((cwd?, preview?, name))
 }
 
 /// Extract displayable text from a user message, or None for envelope-only
@@ -139,6 +162,7 @@ fn user_text(entry: &Value) -> Option<String> {
         || trimmed.starts_with("<command-")
         || trimmed.starts_with("<local-command-")
         || trimmed.starts_with("<system-reminder>")
+        || trimmed.starts_with("<bash-")
     {
         return None;
     }

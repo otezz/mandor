@@ -131,6 +131,14 @@ function addRecentDir(dir) {
   persist();
 }
 
+function removeRecentDir(dir) {
+  const i = recentDirs.indexOf(dir);
+  if (i === -1) return;
+  recentDirs.splice(i, 1);
+  persist();
+  buildCwdMenu(); // rebuild the open dropdown
+}
+
 // --- groups ---
 function autoGroupFor(cwd) {
   if (!cwd) return null;
@@ -906,6 +914,12 @@ function startSession(cwd, opts = {}) {
   const isResume = !!opts.resume;
   const id = isResume ? opts.resume : crypto.randomUUID();
   if (sessions.has(id)) {
+    const existing = sessions.get(id);
+    if (opts.name && existing.name !== opts.name) {
+      existing.name = opts.name; // adopt the -n name when resuming a restored pill
+      renderSessionList();
+      persist();
+    }
     setActive(id); // already open — just focus it (also de-dupes resume)
     return;
   }
@@ -1217,7 +1231,8 @@ function renderNsExisting() {
     ? scoped.filter(
         (s) =>
           s.cwd.toLowerCase().includes(q) ||
-          s.preview.toLowerCase().includes(q),
+          s.preview.toLowerCase().includes(q) ||
+          (s.name || "").toLowerCase().includes(q),
       )
     : scoped;
   if (!matches.length) {
@@ -1227,17 +1242,26 @@ function renderNsExisting() {
   for (const s of matches) {
     const li = document.createElement("li");
     li.className = "ns-existing-item";
-    li.title = `${s.cwd}\n${s.preview}`;
+    li.title = `${s.name ? s.name + "\n" : ""}${s.cwd}\n${s.preview}`;
+    if (s.name) {
+      const nm = document.createElement("div");
+      nm.className = "nse-name";
+      nm.textContent = s.name;
+      li.append(nm);
+    }
     const preview = document.createElement("div");
     preview.className = "nse-preview";
     preview.textContent = s.preview;
-    const sub = document.createElement("div");
-    sub.className = "nse-path";
-    sub.textContent = s.cwd === cwd ? baseName(s.cwd) : s.cwd;
-    li.append(preview, sub);
+    li.append(preview);
+    if (s.cwd !== cwd) {
+      const sub = document.createElement("div");
+      sub.className = "nse-path";
+      sub.textContent = s.cwd;
+      li.append(sub);
+    }
     li.addEventListener("click", () => {
       closeNewModal();
-      startSession(s.cwd, { resume: s.id });
+      startSession(s.cwd, { resume: s.id, name: s.name });
     });
     nsExistingList.appendChild(li);
   }
@@ -1264,18 +1288,30 @@ async function browseCwd() {
 function buildCwdMenu() {
   nsCwdMenu.replaceChildren();
   for (const d of recentDirs) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className = "ns-menu-item" + (d === newSessionCwd ? " current" : "");
+    const row = document.createElement("div");
+    row.className =
+      "ns-menu-item ns-recent" + (d === newSessionCwd ? " current" : "");
+    const info = document.createElement("div");
+    info.className = "ns-recent-info";
     const nm = document.createElement("span");
     nm.className = "ns-mi-name";
     nm.textContent = baseName(d);
     const pth = document.createElement("span");
     pth.className = "ns-mi-path";
     pth.textContent = d;
-    b.append(nm, pth);
-    b.addEventListener("click", () => selectCwd(d));
-    nsCwdMenu.appendChild(b);
+    info.append(nm, pth);
+    info.addEventListener("click", () => selectCwd(d));
+    const rm = document.createElement("button");
+    rm.type = "button";
+    rm.className = "ns-recent-remove";
+    rm.textContent = "×";
+    rm.title = "Remove from recent";
+    rm.addEventListener("click", (e) => {
+      e.stopPropagation();
+      removeRecentDir(d);
+    });
+    row.append(info, rm);
+    nsCwdMenu.appendChild(row);
   }
   if (recentDirs.length) {
     const sep = document.createElement("div");
@@ -1415,7 +1451,9 @@ function renderResume(query) {
   const q = query.toLowerCase();
   const filtered = resumeItems.filter(
     (s) =>
-      s.cwd.toLowerCase().includes(q) || s.preview.toLowerCase().includes(q),
+      s.cwd.toLowerCase().includes(q) ||
+      s.preview.toLowerCase().includes(q) ||
+      (s.name || "").toLowerCase().includes(q),
   );
   resumeList.replaceChildren();
   for (const s of filtered) {
@@ -1424,7 +1462,8 @@ function renderResume(query) {
 
     const folder = document.createElement("div");
     folder.className = "r-folder";
-    folder.textContent = baseName(s.cwd);
+    // prefer the session's name; fall back to the folder when it has none
+    folder.textContent = s.name || baseName(s.cwd);
     const path = document.createElement("div");
     path.className = "r-path";
     path.textContent = s.cwd;
@@ -1435,7 +1474,7 @@ function renderResume(query) {
     li.append(folder, path, preview);
     li.addEventListener("click", () => {
       closeResume();
-      startSession(s.cwd, { resume: s.id });
+      startSession(s.cwd, { resume: s.id, name: s.name });
     });
     resumeList.appendChild(li);
   }
@@ -1723,14 +1762,26 @@ function applyTerminalFontSize() {
 }
 
 // Ctrl/Cmd +/- : bump the terminal font size (clamped), live + persisted.
+const fontHud = document.getElementById("font-hud");
+let fontHudTimer = null;
+function showFontHud(size) {
+  fontHud.textContent = `${size}px`;
+  fontHud.hidden = false;
+  clearTimeout(fontHudTimer);
+  fontHudTimer = setTimeout(() => {
+    fontHud.hidden = true;
+  }, 1000);
+}
+
 function changeFontSize(delta) {
   const cur = settings.terminalFontSize || 13;
-  const next = Math.min(24, Math.max(8, cur + delta));
+  const next = Math.min(32, Math.max(8, cur + delta));
   if (next === cur) return;
   settings.terminalFontSize = next;
   applyTerminalFontSize();
   const fs = document.getElementById("set-fontsize");
   if (fs) fs.value = next;
+  showFontHud(next);
   persist();
 }
 
@@ -1888,7 +1939,7 @@ document
   });
 document.getElementById("set-fontsize").addEventListener("change", (e) => {
   const n = parseInt(e.target.value, 10);
-  settings.terminalFontSize = Math.min(24, Math.max(8, isNaN(n) ? 13 : n));
+  settings.terminalFontSize = Math.min(32, Math.max(8, isNaN(n) ? 13 : n));
   e.target.value = settings.terminalFontSize;
   applyTerminalFontSize();
   persist();
