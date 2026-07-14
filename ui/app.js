@@ -1058,6 +1058,26 @@ function attachTerminal(s) {
   // Let app shortcuts reach the document handler instead of the PTY:
   // Ctrl/Cmd + , = - _  and  Ctrl/Cmd+Shift+F (find in session).
   term.attachCustomKeyEventHandler((ev) => {
+    // Shift+Enter → newline. Terminals send the same bytes for Enter and
+    // Shift+Enter, and without an extended keyboard protocol (xterm.js has none)
+    // claude can't distinguish key events — so inject a bare LF (0x0a), the byte
+    // Ctrl+J sends, which claude treats as "insert newline". Crucially, Enter
+    // fires BOTH keydown and keypress; we must swallow both, or xterm still emits
+    // its default CR (submit) on the keypress. Inject once, on keydown.
+    if (
+      (ev.key === "Enter" ||
+        ev.code === "Enter" ||
+        ev.code === "NumpadEnter") &&
+      ev.shiftKey &&
+      !ev.ctrlKey &&
+      !ev.metaKey &&
+      !ev.altKey
+    ) {
+      if (ev.type === "keydown")
+        invoke("write_pty", { id: s.id, data: "\n" }).catch(() => {});
+      if (ev.type === "keydown" || ev.type === "keypress") return false;
+      return true;
+    }
     if (ev.type !== "keydown") return true;
     if (
       (ev.ctrlKey || ev.metaKey) &&
@@ -1071,19 +1091,6 @@ function attachTerminal(s) {
       [",", "=", "+", "-", "_"].includes(ev.key)
     )
       return false;
-    // Shift+Enter: most terminals send the same bytes as Enter, so claude can't
-    // tell them apart and submits. Send ESC+CR (what claude's /terminal-setup
-    // binds) so it inserts a newline instead of submitting.
-    if (
-      ev.key === "Enter" &&
-      ev.shiftKey &&
-      !ev.ctrlKey &&
-      !ev.metaKey &&
-      !ev.altKey
-    ) {
-      invoke("write_pty", { id: s.id, data: "\x1b\r" }).catch(() => {});
-      return false;
-    }
     return true;
   });
   search.onDidChangeResults((r) => {
