@@ -164,7 +164,7 @@ fn main() {
     // an installed release build's icon). The app-id / WM_CLASS is derived from
     // the program name at GTK init, so this must run before Tauri.
     #[cfg(all(debug_assertions, target_os = "linux"))]
-    glib::set_prgname(Some("mandor-term-dev"));
+    glib::set_prgname(Some("mandor-dev"));
 
     tauri::Builder::default()
         // Must be first: focus the existing window instead of launching a duplicate.
@@ -179,12 +179,12 @@ fn main() {
         .setup(|app| {
             // Tray icon: closing the window hides to tray (sessions keep running);
             // Quit really exits (killing sessions via the ExitRequested handler).
-            let show_i = MenuItem::with_id(app, "show", "Show mandor-term", true, None::<&str>)?;
-            let quit_i = MenuItem::with_id(app, "quit", "Quit mandor-term", true, None::<&str>)?;
+            let show_i = MenuItem::with_id(app, "show", "Show Mandor", true, None::<&str>)?;
+            let quit_i = MenuItem::with_id(app, "quit", "Quit Mandor", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().cloned().ok_or("no window icon")?)
-                .tooltip("mandor-term")
+                .tooltip("Mandor")
                 .menu(&menu)
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
@@ -226,7 +226,7 @@ fn main() {
                             let _ = handle
                                 .notification()
                                 .builder()
-                                .title("mandor-term is still running")
+                                .title("Mandor is still running")
                                 .body("Your sessions keep running in the background. Reopen or quit from the tray icon.")
                                 .show();
                         }
@@ -254,7 +254,7 @@ fn main() {
             list_sessions
         ])
         .build(tauri::generate_context!())
-        .expect("error while building mandor-term")
+        .expect("error while building Mandor")
         .run(|app, event| {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 if let Some(state) = app.try_state::<PtyState>() {

@@ -3,7 +3,7 @@
   "configVersion": 1,
   "workspaces": {
     "": {
-      "name": "mandor-term",
+      "name": "mandor",
       "devDependencies": {
         "@tauri-apps/cli": "^2.11.4",
         "@xterm/addon-fit": "^0.11.0",

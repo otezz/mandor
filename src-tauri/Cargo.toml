@@ -1,5 +1,5 @@
 [package]
-name = "mandor-term"
+name = "mandor"
 version = "0.1.0"
 description = "A fast, light desktop GUI for managing interactive claude terminal sessions"
 authors = ["otezz"]

@@ -56,7 +56,7 @@ function baseName(cwd) {
 // Centered titlebar text: app name, plus the active session when there is one.
 function updateTitle() {
   const s = sessions.get(activeId);
-  titleEl.textContent = s ? `mandor-term — ${s.name}` : "mandor-term";
+  titleEl.textContent = s ? `Mandor — ${s.name}` : "Mandor";
 }
 
 // --- theme: keep xterm colors in sync with the chrome (light/dark) ---
@@ -72,6 +72,8 @@ function xtermTheme() {
 }
 
 // --- persistence (localStorage; PTY liveness is the backend's source of truth) ---
+// Kept as-is across the mandor-term→Mandor rename so migrated localStorage
+// (sessions, groups, settings) is still found under this key.
 const STORE_KEY = "mandor-term.sidebar";
 
 function persist() {
