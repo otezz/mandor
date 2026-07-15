@@ -34,7 +34,6 @@ let settings = {
   terminalFontSize: 11, // points (converted to px for xterm), like other terminals
   terminalFont: "JetBrains Mono",
   ligatures: false,
-  scrollSensitivity: 5,
   remoteByDefault: false,
   customThemes: [],
 };
@@ -1108,6 +1107,65 @@ function terminalFontStack() {
   return f && f !== "JetBrains Mono" ? `"${f}", ${base}` : base;
 }
 
+// Common programming ligatures (longest-first so e.g. "===" wins over "=="). The
+// joiner tells xterm to render each match as one run; the CSS enables the font's
+// contextual alternates so the ligature glyph actually forms (DOM renderer).
+const LIGATURE_RE =
+  /<==>|<-->|-->|<--|<->|===|!==|<=>|\.\.\.|->|<-|=>|==|!=|>=|<=|&&|\|\||\|>|<\||\+\+|--|::|:=|\/\/|\/\*|\*\/|\*\*|<<|>>|\.\.|~>|<~|\?\?/g;
+function ligatureJoiner(text) {
+  const ranges = [];
+  LIGATURE_RE.lastIndex = 0;
+  let m;
+  while ((m = LIGATURE_RE.exec(text)) !== null) {
+    ranges.push([m.index, m.index + m[0].length]);
+  }
+  return ranges;
+}
+
+// While selecting, auto-scroll when the pointer nears the top/bottom edge. xterm
+// only scrolls when the pointer goes strictly PAST the rows, which in a full-
+// height terminal is a sliver at the window edge — so extend it to a small edge
+// zone (the region xterm ignores, so the two don't double up), re-driving xterm's
+// selection at the clamped edge so it keeps growing as the buffer scrolls.
+const SELECTION_EDGE = 28;
+function setupSelectionAutoscroll(s, el) {
+  el.addEventListener("mousedown", (e) => {
+    if (e.button !== 0 || !s.term || s.term.buffer.active.type === "alternate")
+      return;
+    let last = e;
+    let timer = null;
+    const onMove = (ev) => (last = ev);
+    const onUp = () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+      if (timer) clearInterval(timer);
+    };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    timer = setInterval(() => {
+      if (!s.term) return;
+      const screen =
+        el.querySelector(".xterm-screen") || el.querySelector(".xterm");
+      if (!screen) return;
+      const r = screen.getBoundingClientRect();
+      const y = last.clientY;
+      let dir = 0;
+      if (y >= r.bottom - SELECTION_EDGE && y <= r.bottom) dir = 1;
+      else if (y <= r.top + SELECTION_EDGE && y >= r.top) dir = -1;
+      if (!dir) return; // outside the edge zone (or beyond it — xterm's own job)
+      s.term.scrollLines(dir);
+      const clampedY = dir === 1 ? r.bottom - 1 : r.top + 1;
+      screen.dispatchEvent(
+        new MouseEvent("mousemove", {
+          bubbles: true,
+          clientX: last.clientX,
+          clientY: clampedY,
+        }),
+      );
+    }, 50);
+  });
+}
+
 function attachTerminal(s) {
   if (s.term) return;
   const el = document.createElement("div");
@@ -1120,8 +1178,8 @@ function attachTerminal(s) {
     fontSize: fontSizePx(),
     cursorBlink: true,
     scrollback: 5000,
-    scrollSensitivity: settings.scrollSensitivity || 5,
-    fastScrollSensitivity: (settings.scrollSensitivity || 5) * 2,
+    scrollSensitivity: 3,
+    fastScrollSensitivity: 6,
     allowProposedApi: true,
     theme: activeXtermTheme(),
   });
@@ -1183,6 +1241,10 @@ function attachTerminal(s) {
   s.fit = fit;
   s.search = search;
   s.el = el;
+  s.ligatureJoinerId = settings.ligatures
+    ? term.registerCharacterJoiner(ligatureJoiner)
+    : null;
+  setupSelectionAutoscroll(s, el);
   term.onData((data) =>
     invoke("write_pty", { id: s.id, data }).catch(() => {}),
   );
@@ -1197,7 +1259,22 @@ function attachTerminal(s) {
 // from PTY output: while claude streams output the session is "working" (blue
 // pulse); when output stops (or the bell rings) a background session flips to
 // "needs attention" (amber) — meaning it finished a turn / is waiting for you.
+// Titlebar bell: lit whenever any background session needs attention, so it's
+// visible even with the sidebar collapsed. Clicking opens the oldest such one.
+const attentionBtn = document.getElementById("attention-btn");
+function updateAttentionIndicator() {
+  if (POPOUT) return;
+  attentionBtn.hidden = ![...sessions.values()].some((x) => x.attention);
+}
+if (!POPOUT) {
+  attentionBtn.addEventListener("click", () => {
+    const id = sessionOrder.find((sid) => sessions.get(sid)?.attention);
+    if (id) setActive(id);
+  });
+}
+
 function refreshBadge(s) {
+  updateAttentionIndicator();
   const row = listEl.querySelector(`.session-row[data-id="${s.id}"]`);
   if (!row) return;
   const bg = s.id !== activeId;
@@ -1407,6 +1484,7 @@ async function closeSession(id) {
     }
   }
   renderSessionList();
+  updateAttentionIndicator();
   persist();
 }
 
@@ -2175,36 +2253,67 @@ const setThemeLabel = document.getElementById("set-theme-label");
 const setFontMenu = document.getElementById("set-font-menu");
 const setFontLabel = document.getElementById("set-font-label");
 
-// Terminal font picker, populated from the installed monospace families.
+let fontListCache = null;
+
+// Terminal font picker: a search box over the installed monospace families
+// (JetBrains Mono first), each item previewed in its own font.
 async function buildFontMenu() {
   setFontMenu.replaceChildren();
-  let fonts = [];
-  try {
-    fonts = await invoke("list_fonts");
-  } catch {
-    /* ignore */
+  if (!fontListCache) {
+    try {
+      fontListCache = await invoke("list_fonts");
+    } catch {
+      fontListCache = [];
+    }
   }
-  // JetBrains Mono first (Ghostty's default), then the rest, de-duped.
   const families = [
     "JetBrains Mono",
-    ...fonts.filter((f) => f && f !== "JetBrains Mono"),
+    ...fontListCache.filter((f) => f && f !== "JetBrains Mono"),
   ];
-  for (const fam of families) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.className =
-      "ns-menu-item" + (settings.terminalFont === fam ? " current" : "");
-    b.textContent = fam;
-    b.style.fontFamily = `"${fam}", ui-monospace, monospace`;
-    b.addEventListener("click", () => {
-      settings.terminalFont = fam;
-      setFontLabel.textContent = fam;
-      applyTerminalFont();
-      persist();
-      setFontMenu.hidden = true;
-    });
-    setFontMenu.appendChild(b);
-  }
+
+  const filter = document.createElement("input");
+  filter.className = "ns-input ns-menu-filter";
+  filter.type = "text";
+  filter.placeholder = "Search fonts…";
+  filter.spellcheck = false;
+  filter.addEventListener("click", (e) => e.stopPropagation()); // don't close the menu
+  const list = document.createElement("div");
+  list.className = "ns-menu-list";
+
+  const renderItems = () => {
+    list.replaceChildren();
+    const q = filter.value.trim().toLowerCase();
+    const shown = q
+      ? families.filter((f) => f.toLowerCase().includes(q))
+      : families;
+    for (const fam of shown) {
+      const b = document.createElement("button");
+      b.type = "button";
+      b.className =
+        "ns-menu-item" + (settings.terminalFont === fam ? " current" : "");
+      b.textContent = fam;
+      b.style.fontFamily = `"${fam}", ui-monospace, monospace`;
+      b.addEventListener("click", () => {
+        settings.terminalFont = fam;
+        setFontLabel.textContent = fam;
+        applyTerminalFont();
+        persist();
+        setFontMenu.hidden = true;
+      });
+      list.appendChild(b);
+    }
+    if (!shown.length) {
+      const empty = document.createElement("div");
+      empty.className = "ns-menu-empty";
+      empty.textContent = "No matching fonts";
+      list.appendChild(empty);
+    }
+  };
+
+  filter.addEventListener("input", renderItems);
+  setFontMenu.append(filter, list);
+  renderItems();
+  filter.focus();
 }
 
 function themeLabel(value) {
@@ -2354,19 +2463,9 @@ function applySettings() {
   applyTheme();
   applyTerminalFontSize();
   applyTerminalFont();
-  applyScrollSensitivity();
   invoke("set_claude_path", { path: settings.claudePath || null }).catch(
     () => {},
   );
-}
-
-function applyScrollSensitivity() {
-  const n = settings.scrollSensitivity || 5;
-  for (const s of sessions.values()) {
-    if (!s.term) continue;
-    s.term.options.scrollSensitivity = n;
-    s.term.options.fastScrollSensitivity = n * 2;
-  }
 }
 
 function applyTerminalFontSize() {
@@ -2384,6 +2483,13 @@ function applyTerminalFont() {
     if (!s.term) continue;
     s.term.options.fontFamily = stack;
     s.el?.classList.toggle("ligatures", !!settings.ligatures);
+    // Match the ligature joiner to the setting (register/deregister once).
+    if (settings.ligatures && s.ligatureJoinerId == null) {
+      s.ligatureJoinerId = s.term.registerCharacterJoiner(ligatureJoiner);
+    } else if (!settings.ligatures && s.ligatureJoinerId != null) {
+      s.term.deregisterCharacterJoiner(s.ligatureJoinerId);
+      s.ligatureJoinerId = null;
+    }
     if (s.el && s.el.style.display !== "none") s.fit.fit();
   }
 }
@@ -2505,7 +2611,6 @@ function openSettings() {
   document.getElementById("set-claude-path").value = settings.claudePath;
   document.getElementById("set-fontsize").value =
     settings.terminalFontSize || 11;
-  document.getElementById("set-scroll").value = settings.scrollSensitivity || 5;
   document.getElementById("set-notifications").checked =
     settings.notifications !== false;
   document.getElementById("set-remote-default").checked =
@@ -2601,13 +2706,6 @@ document.getElementById("set-fontsize").addEventListener("change", (e) => {
   settings.terminalFontSize = clampFontPt(isNaN(n) ? 11 : n);
   e.target.value = settings.terminalFontSize;
   applyTerminalFontSize();
-  persist();
-});
-document.getElementById("set-scroll").addEventListener("change", (e) => {
-  const n = parseInt(e.target.value, 10);
-  settings.scrollSensitivity = Math.min(20, Math.max(1, isNaN(n) ? 5 : n));
-  e.target.value = settings.scrollSensitivity;
-  applyScrollSensitivity();
   persist();
 });
 document

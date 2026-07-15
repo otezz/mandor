@@ -52,6 +52,21 @@
           >
             «
           </button>
+          <button
+            id="attention-btn"
+            class="titlebar-menu-btn attention-btn"
+            type="button"
+            title="A session needs your attention — click to open it"
+            aria-label="A session needs attention"
+            hidden
+          >
+            <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
+              <path
+                d="M8 1.5a4 4 0 0 0-4 4c0 3-1.2 4-1.2 4h10.4S12 8.5 12 5.5a4 4 0 0 0-4-4z"
+              />
+              <path d="M6.6 13a1.5 1.5 0 0 0 2.8 0" />
+            </svg>
+          </button>
         </div>
         <span id="titlebar-title" class="titlebar-title">Mandor</span>
         <div class="titlebar-controls">
@@ -377,10 +392,7 @@
                 max="24"
                 step="1"
               />
-              <span class="set-hint"
-                >Points — matches Ghostty and other terminals (set the same
-                number).</span
-              >
+              <span class="set-hint">Size in points.</span>
             </div>
             <label class="set-check">
               <input id="set-ligatures" type="checkbox" />
@@ -389,18 +401,6 @@
                 JetBrains Mono / Fira Code)</span
               >
             </label>
-            <div class="set-field">
-              <span class="set-label">Scroll speed</span>
-              <input
-                id="set-scroll"
-                class="ns-input"
-                type="number"
-                min="1"
-                max="20"
-                step="1"
-              />
-              <span class="set-hint">Mouse-wheel scrollback multiplier.</span>
-            </div>
             <div class="set-field">
               <span class="set-label">Custom themes</span>
               <div id="set-custom-themes" class="set-custom-themes"></div>

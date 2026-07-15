@@ -71,6 +71,7 @@ body.maximized .window {
 
 .titlebar-menu-btn {
   width: 40px;
+  align-self: stretch; /* full titlebar height so the whole button is hoverable */
   border: none;
   background: transparent;
   color: var(--fg-dim);
@@ -90,6 +91,35 @@ body.maximized .window {
 .titlebar-menu-btn:hover {
   background: var(--accent-bg);
   color: var(--fg);
+}
+
+/* Bell shown when any background session needs attention */
+.attention-btn {
+  color: #f4b45a;
+  animation: attention-pulse 1.6s ease-in-out infinite;
+}
+
+.attention-btn svg {
+  fill: currentColor;
+  stroke: none;
+}
+
+.attention-btn:hover {
+  color: #f4b45a;
+}
+
+.attention-btn[hidden] {
+  display: none;
+}
+
+@keyframes attention-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.4;
+  }
 }
 
 .titlebar-title {
@@ -907,6 +937,20 @@ body.dragging {
   border-radius: 8px;
   padding: 4px;
   box-shadow: 0 12px 32px rgba(0, 0, 0, 0.4);
+}
+
+/* Search box pinned atop a scrolling menu (font picker) */
+.ns-menu-filter {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  margin-bottom: 4px;
+}
+
+.ns-menu-empty {
+  padding: 8px 9px;
+  font-size: 13px;
+  color: var(--fg-dim);
 }
 
 .ns-menu-item {
