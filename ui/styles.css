@@ -108,6 +108,41 @@ body.maximized .window {
   margin-left: auto;
 }
 
+.titlebar-update {
+  align-self: center;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  margin: 0 8px;
+  padding: 0 10px;
+  border: 1px solid var(--accent);
+  border-radius: 6px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.titlebar-update[hidden] {
+  display: none;
+}
+
+.titlebar-update svg {
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+}
+
+.titlebar-update:hover {
+  background: var(--accent);
+  color: var(--titlebar);
+}
+
 .win-btn {
   width: 44px;
   border: none;
@@ -305,6 +340,13 @@ body.maximized .window {
   text-overflow: ellipsis;
   white-space: nowrap;
   outline: none;
+}
+
+.s-incognito {
+  flex: none;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.85;
 }
 
 .s-name[contenteditable="true"] {
@@ -520,6 +562,16 @@ body.dragging {
   inset: 6px;
 }
 
+/* Optional programming ligatures (xterm's DOM renderer honors these on its text
+   runs). Off by default; toggled per-terminal from Settings. */
+.terminal-host.ligatures .xterm,
+.terminal-host.ligatures .xterm-rows {
+  font-variant-ligatures: contextual;
+  font-feature-settings:
+    "liga" 1,
+    "calt" 1;
+}
+
 /* Find-in-session bar */
 .find-bar {
   position: absolute;
@@ -599,53 +651,6 @@ body.dragging {
   display: none;
 }
 
-/* "Restart to update" prompt (a new .deb was installed while running) */
-.update-banner {
-  position: absolute;
-  bottom: 16px;
-  right: 16px;
-  z-index: 45;
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 8px 8px 8px 14px;
-  background: var(--bg-alt);
-  border: 1px solid var(--accent);
-  border-radius: 8px;
-  font-size: 13px;
-  color: var(--fg);
-  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.4);
-}
-
-.update-banner[hidden] {
-  display: none;
-}
-
-.update-restart {
-  background: var(--accent);
-  color: var(--titlebar);
-  border: none;
-  border-radius: 6px;
-  padding: 6px 12px;
-  font-size: 13px;
-  font-weight: 600;
-  cursor: pointer;
-}
-
-.update-dismiss {
-  background: none;
-  border: none;
-  color: var(--fg-dim);
-  font-size: 14px;
-  line-height: 1;
-  padding: 2px 4px;
-  cursor: pointer;
-}
-
-.update-dismiss:hover {
-  color: var(--fg);
-}
-
 /* Shown while an OS file is dragged over the window */
 .drop-overlay {
   position: absolute;
@@ -705,7 +710,7 @@ body.dragging {
 }
 
 .modal-backdrop {
-  position: absolute;
+  position: fixed; /* cover the viewport even when .modal scrolls (tall box) */
   inset: 0;
   background: rgba(0, 0, 0, 0.45);
 }
@@ -1199,6 +1204,10 @@ body.dragging {
   color: var(--fg);
 }
 
+.close-msg.close-warn {
+  color: var(--red);
+}
+
 /* Sidebar collapse */
 body.sidebar-collapsed #sidebar {
   display: none;
@@ -1235,6 +1244,15 @@ body.dev #new-session {
   overflow: hidden;
   box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
   position: relative;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+/* Inputs stay selectable/editable */
+.settings-dialog input,
+.settings-dialog textarea {
+  -webkit-user-select: text;
+  user-select: text;
 }
 
 .settings-nav {
@@ -1427,11 +1445,15 @@ body.dev #new-session {
   color: var(--fg-dim);
 }
 
-/* Pop-out window: only the terminal, no sidebar/titlebar/resize grips */
-body.popout .titlebar,
-body.popout #sidebar,
-body.popout .resizer {
+/* Pop-out window: same custom titlebar + resize grips as the main window, just
+   no sidebar. The left titlebar controls (app menu, sidebar toggle) are
+   main-window only, so hide those. */
+body.popout #sidebar {
   display: none;
+}
+
+body.popout .titlebar-left {
+  visibility: hidden;
 }
 
 /* Window resize grips (native decorations are off) */

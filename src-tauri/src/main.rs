@@ -15,7 +15,10 @@ use tauri::{
     Manager, WindowEvent,
 };
 
-use pty::{close_pty, open_pty, resize_pty, running_ptys, set_claude_path, write_pty, PtyState};
+use pty::{
+    close_pty, open_pty, resize_pty, running_ptys, set_claude_path, sweep_incognito_dirs,
+    write_pty, PtyState,
+};
 use sessions::list_sessions;
 
 /// GUI launches (from a .desktop entry) don't inherit the shell's PATH, so tools
@@ -133,9 +136,11 @@ async fn update_available(startup: tauri::State<'_, AppStartup>) -> Result<bool,
         let (Some(exe), Some(start)) = (exe, start) else {
             return false;
         };
+        // dpkg preserves the .deb's build-time mtime, so any change (not just a
+        // newer time) means a different binary is on disk — treat that as an update.
         std::fs::metadata(&exe)
             .and_then(|m| m.modified())
-            .map(|now| now > start)
+            .map(|now| now != start)
             .unwrap_or(false)
     })
     .await
@@ -147,6 +152,33 @@ async fn update_available(startup: tauri::State<'_, AppStartup>) -> Result<bool,
 #[tauri::command]
 fn restart_app(app: tauri::AppHandle) {
     app.restart();
+}
+
+/// Installed monospace font families (via fontconfig), for the terminal-font
+/// picker. Blocking `fc-list` runs off the main thread.
+#[tauri::command]
+async fn list_fonts() -> Result<Vec<String>, String> {
+    tauri::async_runtime::spawn_blocking(|| {
+        use std::collections::BTreeSet;
+        let mut families = BTreeSet::new();
+        if let Ok(out) = std::process::Command::new("fc-list")
+            .args([":spacing=100", "family"])
+            .output()
+        {
+            for line in String::from_utf8_lossy(&out.stdout).lines() {
+                // A line can list localized/aliased names comma-separated.
+                if let Some(name) = line.split(',').next() {
+                    let name = name.trim();
+                    if !name.is_empty() {
+                        families.insert(name.to_string());
+                    }
+                }
+            }
+        }
+        families.into_iter().collect::<Vec<_>>()
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// App metadata for an About view.
@@ -181,6 +213,7 @@ fn open_session_window(app: tauri::AppHandle, id: String, name: String) -> Resul
         .title(name)
         .inner_size(1000.0, 700.0)
         .min_inner_size(600.0, 400.0)
+        .decorations(false) // use the same custom titlebar as the main window
         .build()
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -198,6 +231,10 @@ fn show_main(app: &tauri::AppHandle) {
 fn main() {
     #[cfg(unix)]
     ensure_tools_on_path();
+
+    // Clear any incognito config dirs left by a previous crash (clean exits delete
+    // their own; nothing incognito survives a restart).
+    sweep_incognito_dirs();
 
     // Dev (debug) builds run under a distinct program name so GNOME/Wayland
     // treats them as a separate app in the taskbar (and doesn't paint them with
@@ -291,6 +328,7 @@ fn main() {
             is_dev,
             update_available,
             restart_app,
+            list_fonts,
             app_info,
             notify,
             open_session_window,

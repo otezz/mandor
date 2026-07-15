@@ -56,6 +56,18 @@
         <span id="titlebar-title" class="titlebar-title">Mandor</span>
         <div class="titlebar-controls">
           <button
+            id="titlebar-update"
+            class="titlebar-update"
+            type="button"
+            title="Restart to apply the update"
+            hidden
+          >
+            <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
+              <path d="M13.6 8a5.6 5.6 0 1 1-1.7-4M13.7 2.4V5.4H10.7" />
+            </svg>
+            Restart to update
+          </button>
+          <button
             id="win-min"
             class="win-btn"
             type="button"
@@ -139,20 +151,6 @@
             <span>Drop file to add its path</span>
           </div>
           <div id="font-hud" class="font-hud" hidden></div>
-          <div id="update-banner" class="update-banner" hidden>
-            <span class="update-msg">A new version is installed.</span>
-            <button id="update-restart" class="update-restart" type="button">
-              Restart to update
-            </button>
-            <button
-              id="update-dismiss"
-              class="update-dismiss"
-              type="button"
-              aria-label="Dismiss"
-            >
-              ✕
-            </button>
-          </div>
           <div id="empty">
             <p>No sessions yet.</p>
             <p class="hint">
@@ -244,6 +242,13 @@
             <span
               >Enable remote control (reach this session from the Claude
               app)</span
+            >
+          </label>
+          <label class="field-check">
+            <input id="ns-incognito" type="checkbox" />
+            <span
+              >Incognito (isolated config; transcript &amp; history not saved to
+              disk, not resumable)</span
             >
           </label>
         </div>
@@ -350,16 +355,40 @@
               </div>
             </div>
             <div class="set-field">
+              <span class="set-label">Terminal font</span>
+              <div class="ns-dropdown">
+                <button id="set-font-btn" class="ns-dd-btn" type="button">
+                  <span id="set-font-label" class="ns-dd-label"
+                    >JetBrains Mono</span
+                  >
+                  <span class="ns-caret">▾</span>
+                </button>
+                <div id="set-font-menu" class="ns-menu" hidden></div>
+              </div>
+              <span class="set-hint">Installed monospace fonts.</span>
+            </div>
+            <div class="set-field">
               <span class="set-label">Terminal font size</span>
               <input
                 id="set-fontsize"
                 class="ns-input"
                 type="number"
-                min="8"
-                max="32"
+                min="6"
+                max="24"
                 step="1"
               />
+              <span class="set-hint"
+                >Points — matches Ghostty and other terminals (set the same
+                number).</span
+              >
             </div>
+            <label class="set-check">
+              <input id="set-ligatures" type="checkbox" />
+              <span
+                >Enable programming ligatures (e.g. → ≥ != in fonts like
+                JetBrains Mono / Fira Code)</span
+              >
+            </label>
             <div class="set-field">
               <span class="set-label">Scroll speed</span>
               <input

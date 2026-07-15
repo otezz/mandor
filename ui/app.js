@@ -31,11 +31,20 @@ let settings = {
   claudePath: "",
   notifications: true,
   defaultModel: "",
-  terminalFontSize: 13,
+  terminalFontSize: 11, // points (converted to px for xterm), like other terminals
+  terminalFont: "JetBrains Mono",
+  ligatures: false,
   scrollSensitivity: 5,
   remoteByDefault: false,
   customThemes: [],
 };
+
+// Terminal font size is in points (like Ghostty et al.); xterm wants px, so
+// convert at 96/72. Points keep the number consistent with other terminals.
+const FONT_PT_MIN = 6;
+const FONT_PT_MAX = 24;
+const clampFontPt = (pt) => Math.min(FONT_PT_MAX, Math.max(FONT_PT_MIN, pt));
+const fontSizePx = () => (settings.terminalFontSize || 11) * (96 / 72);
 
 const listEl = document.getElementById("session-list");
 const termsEl = document.getElementById("terminals");
@@ -408,6 +417,7 @@ function persist() {
   const sess = sessionOrder
     .map((id) => sessions.get(id))
     .filter(Boolean)
+    .filter((s) => !s.incognito) // never persist incognito sessions to disk
     .map((s) => ({
       id: s.id,
       cwd: s.cwd,
@@ -439,8 +449,17 @@ function loadStore() {
     ungroupedCollapsed = !!data.ungroupedCollapsed;
     recentDirs = Array.isArray(data.recentDirs) ? data.recentDirs : [];
     sidebarCollapsed = !!data.sidebarCollapsed;
-    if (data.settings && typeof data.settings === "object")
-      settings = { ...settings, ...data.settings };
+    const stored =
+      data.settings && typeof data.settings === "object" ? data.settings : null;
+    if (stored) settings = { ...settings, ...data.settings };
+    // Font size is now stored in points. Migrate stores from before that (their
+    // value was px) once, so the on-screen size stays about the same (pt ≈ px×¾).
+    if (stored && !stored.fontSizeUnitPt) {
+      settings.terminalFontSize = clampFontPt(
+        Math.round((settings.terminalFontSize || 15) * 0.75),
+      );
+    }
+    settings.fontSizeUnitPt = true;
     if (!Array.isArray(settings.customThemes)) settings.customThemes = [];
     // fall back to the default flavor if the saved theme no longer exists
     // (covers old auto/light/dark values and deleted custom themes)
@@ -626,6 +645,11 @@ function buildUngroupedHeader(count) {
     persist();
     renderSessionList();
   });
+  header.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    e.stopPropagation();
+    openContextMenu(e, "ungrouped", null);
+  });
   return header;
 }
 
@@ -650,7 +674,15 @@ function buildRow(s) {
   close.className = "s-close";
   close.textContent = "✕";
   close.title = "Close session";
-  row.append(badge, name, close);
+  row.append(badge);
+  if (s.incognito) {
+    const inc = document.createElement("span");
+    inc.className = "s-incognito";
+    inc.textContent = "🕶";
+    inc.title = "Incognito — isolated config dir, nothing saved to disk";
+    row.append(inc);
+  }
+  row.append(name, close);
 
   row.addEventListener("click", (e) => {
     if (justDragged || e.target === close || name.isContentEditable) return;
@@ -729,6 +761,23 @@ document.addEventListener("mousemove", (e) => {
 
   const onHeader = t.el.classList.contains("group-header");
   if (drag.kind === "session" && onHeader) {
+    // Over a COLLAPSED group: expand it so its rows show and the session can be
+    // dropped at an exact position (next mousemove computes it among the rows).
+    const gid = t.el.dataset.group || null;
+    const collapsedGroup =
+      gid && groups.find((x) => x.id === gid && x.collapsed);
+    if (collapsedGroup || (!gid && ungroupedCollapsed)) {
+      if (collapsedGroup) collapsedGroup.collapsed = false;
+      else ungroupedCollapsed = false;
+      persist();
+      renderSessionList();
+      const again = listEl.querySelector(`.session-row[data-id="${drag.id}"]`);
+      if (again) {
+        drag.el = again; // re-acquire the dragged row after the re-render
+        again.classList.add("drag-src");
+      }
+      return;
+    }
     // Dropping on a header means "into this group" — ring only, no line
     // (avoids a doubled top line where the ring meets the drop line).
     groupHeaderEl(targetGroupId(t))?.classList.add("drop-into");
@@ -768,6 +817,17 @@ document.getElementById("sidebar").addEventListener("selectstart", (e) => {
   if (el?.closest('[contenteditable="true"]')) return;
   e.preventDefault();
 });
+
+// Same for the settings dialog (WebKitGTK ignores user-select alone); inputs and
+// textareas stay selectable so their text can still be edited.
+document
+  .getElementById("settings-modal")
+  .addEventListener("selectstart", (e) => {
+    const node = e.target;
+    const el = node.nodeType === 1 ? node : node.parentElement;
+    if (el?.closest('input, textarea, [contenteditable="true"]')) return;
+    e.preventDefault();
+  });
 
 // The group a drop target belongs to ("" header → null / Ungrouped).
 function targetGroupId(t) {
@@ -944,7 +1004,12 @@ function openContextMenu(e, kind, id) {
       danger: true,
       run: () => deleteGroup(id),
     });
+  } else if (kind === "ungrouped") {
+    items.push({ label: "New session here", run: () => openNewSession(null) });
+    items.push({ sep: true });
+    items.push({ label: "New group", run: createGroupAndRename });
   } else {
+    items.push({ label: "New session", run: () => openNewSession(null) });
     items.push({ label: "New group", run: createGroupAndRename });
   }
 
@@ -1022,6 +1087,7 @@ function addSession(rec) {
     wantWorktree: !!rec.wantWorktree,
     wantModel: rec.wantModel || "",
     wantRemote: !!rec.wantRemote,
+    incognito: !!rec.incognito, // isolated config dir, nothing saved to disk
     live: !!rec.live, // a PTY is running for this session
     exited: false,
     term: null,
@@ -1034,15 +1100,24 @@ function addSession(rec) {
 }
 
 // Give a session an xterm + DOM node (kept detached until activated).
+// Terminal font family stack: the chosen font first, then the bundled JetBrains
+// Mono and generic monospace as fallbacks.
+function terminalFontStack() {
+  const f = (settings.terminalFont || "JetBrains Mono").trim();
+  const base = '"JetBrains Mono", ui-monospace, monospace';
+  return f && f !== "JetBrains Mono" ? `"${f}", ${base}` : base;
+}
+
 function attachTerminal(s) {
   if (s.term) return;
   const el = document.createElement("div");
   el.className = "terminal-host";
+  if (settings.ligatures) el.classList.add("ligatures");
   el.style.display = "none";
   termsEl.appendChild(el);
   const term = new Terminal({
-    fontFamily: "'JetBrains Mono', 'Fira Code', ui-monospace, monospace",
-    fontSize: settings.terminalFontSize || 13,
+    fontFamily: terminalFontStack(),
+    fontSize: fontSizePx(),
     cursorBlink: true,
     scrollback: 5000,
     scrollSensitivity: settings.scrollSensitivity || 5,
@@ -1188,6 +1263,7 @@ async function spawnSession(s) {
     worktree: false,
     model: null,
     remoteControl: false,
+    incognito: !!s.incognito,
   };
   args.remoteControl = !!s.wantRemote; // applies to new and resumed alike
   if (s.spawnMode === "new") {
@@ -1282,6 +1358,7 @@ function startSession(cwd, opts = {}) {
     // resume has no checkbox — fall back to the "remote by default" setting
     wantRemote:
       "remoteControl" in opts ? opts.remoteControl : settings.remoteByDefault,
+    incognito: !!opts.incognito,
     live: false,
   });
   addRecentDir(cwd); // remember the directory for the new-session picker
@@ -1351,8 +1428,9 @@ async function restore() {
     if (sessions.has(rec.id)) continue;
     addSession({ ...rec, spawnMode: "resume", live: liveIds.has(rec.id) });
   }
-  // Live PTYs missing from storage (e.g. storage cleared, backend survived).
-  for (const { id, cwd } of running) {
+  // Live PTYs missing from storage: incognito ones (never persisted), or after a
+  // storage wipe while the backend survived.
+  for (const { id, cwd, incognito } of running) {
     if (sessions.has(id)) continue;
     addSession({
       id,
@@ -1360,6 +1438,7 @@ async function restore() {
       name: baseName(cwd),
       groupId: autoGroupFor(cwd),
       spawnMode: "resume",
+      incognito: !!incognito,
       live: true,
     });
   }
@@ -1438,6 +1517,13 @@ const newModal = document.getElementById("new-modal");
 const nsName = document.getElementById("ns-name");
 const nsWorktree = document.getElementById("ns-worktree");
 const nsRemote = document.getElementById("ns-remote");
+const nsIncognito = document.getElementById("ns-incognito");
+// Incognito shouldn't broadcast to the Claude app by default — turning it on
+// clears remote control; turning it off restores the configured default. Either
+// way the user can still toggle remote control manually afterward.
+nsIncognito.addEventListener("change", () => {
+  nsRemote.checked = nsIncognito.checked ? false : !!settings.remoteByDefault;
+});
 const nsCwdLabel = document.getElementById("ns-cwd-label");
 const nsCwdPath = document.getElementById("ns-cwd-path");
 const nsCwdMenu = document.getElementById("ns-cwd-menu");
@@ -1715,6 +1801,7 @@ function openNewSession(presetGroupId = null) {
   nsNameEdited = false;
   nsWorktree.checked = false;
   nsRemote.checked = !!settings.remoteByDefault;
+  nsIncognito.checked = false;
   setCwdLabel();
   setGroupLabel();
   setModelLabel();
@@ -1753,8 +1840,16 @@ async function createFromModal() {
   const worktree = nsWorktree.checked;
   const model = newSessionModel;
   const remoteControl = nsRemote.checked;
+  const incognito = nsIncognito.checked;
   closeNewModal();
-  startSession(cwd, { name, groupId, worktree, model, remoteControl });
+  startSession(cwd, {
+    name,
+    groupId,
+    worktree,
+    model,
+    remoteControl,
+    incognito,
+  });
 }
 
 document.getElementById("ns-cwd-btn").addEventListener("click", (e) => {
@@ -1908,6 +2003,7 @@ document.addEventListener("click", () => {
   closeContextMenu();
   closeNsMenus();
   setThemeMenu.hidden = true;
+  setFontMenu.hidden = true;
 });
 appMenu.addEventListener("click", (e) => {
   const action = e.target.closest("button")?.dataset.action;
@@ -1939,9 +2035,12 @@ document
 winMax.addEventListener("click", () =>
   invoke("toggle_maximize").then(syncMaxIcon),
 );
-document
-  .getElementById("win-close")
-  .addEventListener("click", () => invoke("hide_to_tray"));
+document.getElementById("win-close").addEventListener("click", () => {
+  // Pop-out: close just this window (the session keeps running in the main
+  // window). Main window: hide to tray so sessions keep running.
+  if (POPOUT) appWindow.close();
+  else invoke("hide_to_tray");
+});
 
 // Drag / double-click-maximize the titlebar. data-tauri-drag-region doesn't work
 // on this Wayland setup, so drive it manually: single mousedown starts a drag,
@@ -1961,26 +2060,23 @@ appWindow.onFocusChanged(({ payload }) => {
 // "Restart to update": with no auto-updater, detect that the on-disk binary was
 // replaced (a new .deb installed while running) and offer a restart. Checked on
 // focus and on an interval; only in the main window.
-const updateBanner = document.getElementById("update-banner");
+const titlebarUpdate = document.getElementById("titlebar-update");
 let updateShown = false;
 async function checkUpdate() {
   if (POPOUT || updateShown) return;
   try {
     if (await invoke("update_available")) {
       updateShown = true;
-      updateBanner.hidden = false;
+      titlebarUpdate.hidden = false;
     }
   } catch {
     /* ignore */
   }
 }
 if (!POPOUT) {
-  document
-    .getElementById("update-restart")
-    .addEventListener("click", () => invoke("restart_app").catch(() => {}));
-  document
-    .getElementById("update-dismiss")
-    .addEventListener("click", () => (updateBanner.hidden = true));
+  titlebarUpdate.addEventListener("click", () =>
+    invoke("restart_app").catch(() => {}),
+  );
   setInterval(checkUpdate, 60000);
 }
 
@@ -2021,7 +2117,12 @@ function requestClose(id) {
     return;
   }
   pendingCloseId = id;
-  closeMsg.textContent = `“${s.name}” — its claude process will be stopped.`;
+  if (s.incognito) {
+    closeMsg.textContent = `“${s.name}” is an incognito session. Closing it stops claude and permanently discards the conversation — it isn’t saved anywhere and can’t be resumed.`;
+  } else {
+    closeMsg.textContent = `“${s.name}” — its claude process will be stopped.`;
+  }
+  closeMsg.classList.toggle("close-warn", !!s.incognito);
   closeModal.hidden = false;
 }
 
@@ -2071,6 +2172,40 @@ const settingsModal = document.getElementById("settings-modal");
 const setDefcwdPath = document.getElementById("set-defcwd");
 const setThemeMenu = document.getElementById("set-theme-menu");
 const setThemeLabel = document.getElementById("set-theme-label");
+const setFontMenu = document.getElementById("set-font-menu");
+const setFontLabel = document.getElementById("set-font-label");
+
+// Terminal font picker, populated from the installed monospace families.
+async function buildFontMenu() {
+  setFontMenu.replaceChildren();
+  let fonts = [];
+  try {
+    fonts = await invoke("list_fonts");
+  } catch {
+    /* ignore */
+  }
+  // JetBrains Mono first (Ghostty's default), then the rest, de-duped.
+  const families = [
+    "JetBrains Mono",
+    ...fonts.filter((f) => f && f !== "JetBrains Mono"),
+  ];
+  for (const fam of families) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.className =
+      "ns-menu-item" + (settings.terminalFont === fam ? " current" : "");
+    b.textContent = fam;
+    b.style.fontFamily = `"${fam}", ui-monospace, monospace`;
+    b.addEventListener("click", () => {
+      settings.terminalFont = fam;
+      setFontLabel.textContent = fam;
+      applyTerminalFont();
+      persist();
+      setFontMenu.hidden = true;
+    });
+    setFontMenu.appendChild(b);
+  }
+}
 
 function themeLabel(value) {
   return (getTheme(value) || BUILTIN_THEMES.frappe).label;
@@ -2218,6 +2353,7 @@ function applySettings() {
   notificationsEnabled = settings.notifications !== false;
   applyTheme();
   applyTerminalFontSize();
+  applyTerminalFont();
   applyScrollSensitivity();
   invoke("set_claude_path", { path: settings.claudePath || null }).catch(
     () => {},
@@ -2234,10 +2370,20 @@ function applyScrollSensitivity() {
 }
 
 function applyTerminalFontSize() {
-  const size = settings.terminalFontSize || 13;
+  const px = fontSizePx();
   for (const s of sessions.values()) {
     if (!s.term) continue;
-    s.term.options.fontSize = size;
+    s.term.options.fontSize = px;
+    if (s.el && s.el.style.display !== "none") s.fit.fit();
+  }
+}
+
+function applyTerminalFont() {
+  const stack = terminalFontStack();
+  for (const s of sessions.values()) {
+    if (!s.term) continue;
+    s.term.options.fontFamily = stack;
+    s.el?.classList.toggle("ligatures", !!settings.ligatures);
     if (s.el && s.el.style.display !== "none") s.fit.fit();
   }
 }
@@ -2246,7 +2392,7 @@ function applyTerminalFontSize() {
 const fontHud = document.getElementById("font-hud");
 let fontHudTimer = null;
 function showFontHud(size) {
-  fontHud.textContent = `${size}px`;
+  fontHud.textContent = `${size}pt`;
   fontHud.hidden = false;
   clearTimeout(fontHudTimer);
   fontHudTimer = setTimeout(() => {
@@ -2255,8 +2401,8 @@ function showFontHud(size) {
 }
 
 function changeFontSize(delta) {
-  const cur = settings.terminalFontSize || 13;
-  const next = Math.min(32, Math.max(8, cur + delta));
+  const cur = settings.terminalFontSize || 11;
+  const next = clampFontPt(cur + delta);
   if (next === cur) return;
   settings.terminalFontSize = next;
   applyTerminalFontSize();
@@ -2353,9 +2499,12 @@ function renderSettingsGroups() {
 function openSettings() {
   setThemeLabel.textContent = themeLabel(settings.theme);
   setThemeMenu.hidden = true;
+  setFontLabel.textContent = settings.terminalFont || "JetBrains Mono";
+  setFontMenu.hidden = true;
+  document.getElementById("set-ligatures").checked = !!settings.ligatures;
   document.getElementById("set-claude-path").value = settings.claudePath;
   document.getElementById("set-fontsize").value =
-    settings.terminalFontSize || 13;
+    settings.terminalFontSize || 11;
   document.getElementById("set-scroll").value = settings.scrollSensitivity || 5;
   document.getElementById("set-notifications").checked =
     settings.notifications !== false;
@@ -2403,6 +2552,20 @@ document.getElementById("set-theme-btn").addEventListener("click", (e) => {
     setThemeMenu.hidden = false;
   }
 });
+document.getElementById("set-font-btn").addEventListener("click", (e) => {
+  e.stopPropagation();
+  const willOpen = setFontMenu.hidden;
+  setFontMenu.hidden = true;
+  if (willOpen) {
+    buildFontMenu();
+    setFontMenu.hidden = false;
+  }
+});
+document.getElementById("set-ligatures").addEventListener("change", (e) => {
+  settings.ligatures = e.target.checked;
+  applyTerminalFont();
+  persist();
+});
 document.getElementById("set-add-theme").addEventListener("click", () => {
   const f = document.getElementById("set-theme-form");
   f.hidden = !f.hidden;
@@ -2435,7 +2598,7 @@ document
   });
 document.getElementById("set-fontsize").addEventListener("change", (e) => {
   const n = parseInt(e.target.value, 10);
-  settings.terminalFontSize = Math.min(32, Math.max(8, isNaN(n) ? 13 : n));
+  settings.terminalFontSize = clampFontPt(isNaN(n) ? 11 : n);
   e.target.value = settings.terminalFontSize;
   applyTerminalFontSize();
   persist();
