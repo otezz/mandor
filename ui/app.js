@@ -738,12 +738,15 @@ function groupHeaderEl(groupId) {
 // The sidebar item under a y coordinate, and whether to drop before or after it.
 function dropTarget(y) {
   const items = [...listEl.querySelectorAll(".session-row, .group-header")];
+  if (!items.length) return null;
   for (const el of items) {
     const r = el.getBoundingClientRect();
-    if (y < r.top + r.height / 2) return { el, before: true };
+    // First item the cursor is within or above; its half decides before/after.
+    // (Using the bottom edge lets the lower half of a group's last row read as
+    // "after" — the drop point for the end of a group.)
+    if (y <= r.bottom) return { el, before: y < r.top + r.height / 2 };
   }
-  const last = items[items.length - 1];
-  return last ? { el: last, before: false } : null;
+  return { el: items[items.length - 1], before: false };
 }
 
 document.addEventListener("mousemove", (e) => {
@@ -1259,17 +1262,46 @@ function attachTerminal(s) {
 // from PTY output: while claude streams output the session is "working" (blue
 // pulse); when output stops (or the bell rings) a background session flips to
 // "needs attention" (amber) — meaning it finished a turn / is waiting for you.
-// Titlebar bell: lit whenever any background session needs attention, so it's
-// visible even with the sidebar collapsed. Clicking opens the oldest such one.
+// Titlebar bell: shown whenever any background session needs attention (visible
+// even with the sidebar collapsed). Clicking opens a dropdown of those sessions;
+// picking one opens it (which clears its attention, dropping it off the list).
+const attentionDropdown = document.getElementById("attention-dropdown");
 const attentionBtn = document.getElementById("attention-btn");
+const attentionMenu = document.getElementById("attention-menu");
+
+function buildAttentionMenu() {
+  attentionMenu.replaceChildren();
+  for (const id of sessionOrder) {
+    const s = sessions.get(id);
+    if (!s || !s.attention) continue;
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = s.name;
+    b.addEventListener("click", (e) => {
+      e.stopPropagation();
+      setActive(id); // clears attention; updateAttentionIndicator refreshes below
+    });
+    attentionMenu.appendChild(b);
+  }
+}
+
 function updateAttentionIndicator() {
   if (POPOUT) return;
-  attentionBtn.hidden = ![...sessions.values()].some((x) => x.attention);
+  const any = [...sessions.values()].some((x) => x.attention);
+  attentionDropdown.hidden = !any;
+  if (!any) attentionMenu.hidden = true;
+  else if (!attentionMenu.hidden) buildAttentionMenu(); // keep an open list fresh
 }
+
 if (!POPOUT) {
-  attentionBtn.addEventListener("click", () => {
-    const id = sessionOrder.find((sid) => sessions.get(sid)?.attention);
-    if (id) setActive(id);
+  attentionBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    const willOpen = attentionMenu.hidden;
+    attentionMenu.hidden = true;
+    if (willOpen) {
+      buildAttentionMenu();
+      attentionMenu.hidden = false;
+    }
   });
 }
 
@@ -1315,8 +1347,15 @@ function onBell(s) {
   refreshBadge(s);
 }
 
+// The webview's own focus is more reliable than Tauri's window focus event on
+// GNOME/Wayland + WebKitGTK (where the blur event may never fire, leaving
+// `appFocused` stuck true and silently suppressing every notification).
+function appInForeground() {
+  return document.hasFocus() && document.visibilityState !== "hidden";
+}
+
 function notifyAttention(s) {
-  if (!appFocused && notificationsEnabled) {
+  if (notificationsEnabled && !appInForeground()) {
     invoke("notify", {
       title: s.name,
       body: "Claude finished / needs input",
@@ -2060,6 +2099,8 @@ document.addEventListener("keydown", (e) => {
   if (!findBar.hidden) closeFind();
   if (!resumeModal.hidden) closeResume();
   if (!closeModal.hidden) closeCloseModal();
+  if (!restartModal.hidden) closeRestartModal();
+  if (!attentionMenu.hidden) attentionMenu.hidden = true;
   if (!settingsModal.hidden) closeSettings();
   if (!newModal.hidden) {
     if (!nsCwdMenu.hidden || !nsGroupMenu.hidden) closeNsMenus();
@@ -2082,6 +2123,7 @@ document.addEventListener("click", () => {
   closeNsMenus();
   setThemeMenu.hidden = true;
   setFontMenu.hidden = true;
+  if (!POPOUT) attentionMenu.hidden = true;
 });
 appMenu.addEventListener("click", (e) => {
   const action = e.target.closest("button")?.dataset.action;
@@ -2151,10 +2193,40 @@ async function checkUpdate() {
     /* ignore */
   }
 }
+const restartModal = document.getElementById("restart-modal");
+function closeRestartModal() {
+  restartModal.hidden = true;
+}
+// Restart only after warning if sessions are mid-task (restart stops all running
+// PTYs; they come back cold/resumable, but active work would be interrupted).
+function requestRestart() {
+  const working = [...sessions.values()].filter((x) => x.live && x.working);
+  if (!working.length) {
+    invoke("restart_app").catch(() => {});
+    return;
+  }
+  const n = working.length;
+  document.getElementById("restart-msg").textContent =
+    `${n} session${n === 1 ? " is" : "s are"} still working. Restarting stops all running sessions — they can be resumed afterward, but in-progress work is interrupted. Restart now?`;
+  restartModal.hidden = false;
+}
 if (!POPOUT) {
-  titlebarUpdate.addEventListener("click", () =>
-    invoke("restart_app").catch(() => {}),
-  );
+  document
+    .getElementById("titlebar-update-restart")
+    .addEventListener("click", requestRestart);
+  document
+    .getElementById("titlebar-update-dismiss")
+    .addEventListener("click", () => (titlebarUpdate.hidden = true));
+  document
+    .getElementById("restart-cancel")
+    .addEventListener("click", closeRestartModal);
+  document
+    .getElementById("restart-backdrop")
+    .addEventListener("click", closeRestartModal);
+  document.getElementById("restart-confirm").addEventListener("click", () => {
+    closeRestartModal();
+    invoke("restart_app").catch(() => {});
+  });
   setInterval(checkUpdate, 60000);
 }
 

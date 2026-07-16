@@ -69,6 +69,10 @@ body.maximized .window {
   position: relative;
 }
 
+.titlebar-left .dropdown[hidden] {
+  display: none;
+}
+
 .titlebar-menu-btn {
   width: 40px;
   align-self: stretch; /* full titlebar height so the whole button is hoverable */
@@ -142,25 +146,35 @@ body.maximized .window {
   align-self: center;
   display: inline-flex;
   align-items: center;
-  gap: 6px;
   height: 24px;
   margin: 0 8px;
-  padding: 0 10px;
   border: 1px solid var(--accent);
   border-radius: 6px;
   background: var(--accent-bg);
   color: var(--accent);
-  font-size: 12px;
-  font-weight: 600;
-  cursor: pointer;
-  white-space: nowrap;
+  overflow: hidden;
 }
 
 .titlebar-update[hidden] {
   display: none;
 }
 
-.titlebar-update svg {
+.titlebar-update-restart {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 100%;
+  padding: 0 9px;
+  border: none;
+  background: none;
+  color: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.titlebar-update-restart svg {
   stroke: currentColor;
   stroke-width: 1.4;
   stroke-linecap: round;
@@ -168,7 +182,24 @@ body.maximized .window {
   fill: none;
 }
 
-.titlebar-update:hover {
+.titlebar-update-restart:hover {
+  background: var(--accent);
+  color: var(--titlebar);
+}
+
+.titlebar-update-dismiss {
+  height: 100%;
+  padding: 0 7px;
+  border: none;
+  border-left: 1px solid var(--accent);
+  background: none;
+  color: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.titlebar-update-dismiss:hover {
   background: var(--accent);
   color: var(--titlebar);
 }
@@ -474,6 +505,30 @@ body.dragging {
 
 .drop-after::after {
   bottom: -1px;
+}
+
+/* A right-pointing chevron at the left end of the drop line, marking the exact
+   insertion point. Uses the element's other free pseudo-element (a target is
+   only ever before OR after, never both). */
+.drop-before::after,
+.drop-after::before {
+  content: "";
+  position: absolute;
+  left: -2px;
+  width: 0;
+  height: 0;
+  border-style: solid;
+  border-width: 4px 0 4px 6px;
+  border-color: transparent transparent transparent var(--accent);
+  pointer-events: none;
+}
+
+.drop-before::after {
+  top: -4px;
+}
+
+.drop-after::before {
+  bottom: -4px;
 }
 
 /* Dragging a session over another group — highlight the group it will join.

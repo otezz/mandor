@@ -190,12 +190,29 @@ fn app_info() -> serde_json::Value {
     })
 }
 
+/// Send a desktop notification via notify-rust (the same path `notify-send`
+/// uses). tauri-plugin-notification's show() returns Ok on Linux here but never
+/// raises a banner, so we bypass it.
+fn show_notification(title: &str, body: &str) -> Result<(), String> {
+    // App name is deliberately NOT "Mandor": GNOME resolves that to the running
+    // Mandor.desktop and then suppresses its banners (shows them only in the
+    // tray). A name with no matching .desktop is treated as a generic
+    // notification and always banners — the icon still ties it to Mandor.
+    notify_rust::Notification::new()
+        .summary(title)
+        .body(body)
+        .icon("mandor")
+        .appname("Mandor Sessions")
+        .show()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// Show a desktop notification (used when a session wants attention while the
 /// window is unfocused).
 #[tauri::command]
-fn notify(app: tauri::AppHandle, title: String, body: String) {
-    use tauri_plugin_notification::NotificationExt;
-    let _ = app.notification().builder().title(title).body(body).show();
+fn notify(title: String, body: String) -> Result<(), String> {
+    show_notification(&title, &body)
 }
 
 /// Open (or focus) a separate window showing a single session's terminal. The
@@ -291,7 +308,6 @@ fn main() {
             // Intercept the window close button: hide to tray instead of quitting,
             // with a one-time notification so it's clear the app is still alive.
             if let Some(win) = app.get_webview_window("main") {
-                let handle = app.handle().clone();
                 let win_hide = win.clone();
                 let notified = Arc::new(AtomicBool::new(false));
                 win.on_window_event(move |event| {
@@ -306,13 +322,10 @@ fn main() {
                             let _ = w.hide();
                         });
                         if !notified.swap(true, Ordering::Relaxed) {
-                            use tauri_plugin_notification::NotificationExt;
-                            let _ = handle
-                                .notification()
-                                .builder()
-                                .title("Mandor is still running")
-                                .body("Your sessions keep running in the background. Reopen or quit from the tray icon.")
-                                .show();
+                            let _ = show_notification(
+                                "Mandor is still running",
+                                "Your sessions keep running in the background. Reopen or quit from the tray icon.",
+                            );
                         }
                     }
                 });

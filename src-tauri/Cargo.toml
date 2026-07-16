@@ -18,6 +18,9 @@ tauri-plugin-dialog = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-notification = "2"
+# Sent notifications directly (like notify-send): tauri-plugin-notification's
+# show() returns Ok on Linux but doesn't raise a banner in this environment.
+notify-rust = "4"
 
 # Linux: give dev (debug) builds a distinct Wayland app-id / X11 WM_CLASS so
 # they aren't grouped with an installed release build in the taskbar.

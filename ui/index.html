@@ -52,36 +52,58 @@
           >
             «
           </button>
-          <button
-            id="attention-btn"
-            class="titlebar-menu-btn attention-btn"
-            type="button"
-            title="A session needs your attention — click to open it"
-            aria-label="A session needs attention"
-            hidden
-          >
-            <svg viewBox="0 0 16 16" width="15" height="15" aria-hidden="true">
-              <path
-                d="M8 1.5a4 4 0 0 0-4 4c0 3-1.2 4-1.2 4h10.4S12 8.5 12 5.5a4 4 0 0 0-4-4z"
-              />
-              <path d="M6.6 13a1.5 1.5 0 0 0 2.8 0" />
-            </svg>
-          </button>
+          <div class="dropdown" id="attention-dropdown" hidden>
+            <button
+              id="attention-btn"
+              class="titlebar-menu-btn attention-btn"
+              type="button"
+              title="Sessions that need your attention"
+              aria-label="Sessions that need attention"
+            >
+              <svg
+                viewBox="0 0 16 16"
+                width="15"
+                height="15"
+                aria-hidden="true"
+              >
+                <path
+                  d="M8 1.5a4 4 0 0 0-4 4c0 3-1.2 4-1.2 4h10.4S12 8.5 12 5.5a4 4 0 0 0-4-4z"
+                />
+                <path d="M6.6 13a1.5 1.5 0 0 0 2.8 0" />
+              </svg>
+            </button>
+            <div id="attention-menu" class="dropdown-menu" hidden></div>
+          </div>
         </div>
         <span id="titlebar-title" class="titlebar-title">Mandor</span>
         <div class="titlebar-controls">
-          <button
-            id="titlebar-update"
-            class="titlebar-update"
-            type="button"
-            title="Restart to apply the update"
-            hidden
-          >
-            <svg viewBox="0 0 16 16" width="12" height="12" aria-hidden="true">
-              <path d="M13.6 8a5.6 5.6 0 1 1-1.7-4M13.7 2.4V5.4H10.7" />
-            </svg>
-            Restart to update
-          </button>
+          <div id="titlebar-update" class="titlebar-update" hidden>
+            <button
+              id="titlebar-update-restart"
+              class="titlebar-update-restart"
+              type="button"
+              title="Restart to apply the update"
+            >
+              <svg
+                viewBox="0 0 16 16"
+                width="12"
+                height="12"
+                aria-hidden="true"
+              >
+                <path d="M13.6 8a5.6 5.6 0 1 1-1.7-4M13.7 2.4V5.4H10.7" />
+              </svg>
+              Restart to update
+            </button>
+            <button
+              id="titlebar-update-dismiss"
+              class="titlebar-update-dismiss"
+              type="button"
+              title="Dismiss"
+              aria-label="Dismiss"
+            >
+              ✕
+            </button>
+          </div>
           <button
             id="win-min"
             class="win-btn"
@@ -318,6 +340,24 @@
           </button>
           <button id="close-confirm" class="btn-primary" type="button">
             Close
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="restart-modal" class="modal" hidden>
+      <div class="modal-backdrop" id="restart-backdrop"></div>
+      <div class="modal-box modal-form">
+        <div class="modal-header"><span>Restart to update?</span></div>
+        <div class="ns-fields">
+          <p id="restart-msg" class="close-msg">—</p>
+        </div>
+        <div class="modal-actions">
+          <button id="restart-cancel" class="btn-secondary" type="button">
+            Cancel
+          </button>
+          <button id="restart-confirm" class="btn-primary" type="button">
+            Restart
           </button>
         </div>
       </div>
