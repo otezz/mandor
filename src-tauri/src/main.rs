@@ -19,7 +19,7 @@ use pty::{
     close_pty, open_pty, resize_pty, running_ptys, set_claude_path, sweep_incognito_dirs,
     write_pty, PtyState,
 };
-use sessions::list_sessions;
+use sessions::{list_sessions, session_pr};
 
 /// GUI launches (from a .desktop entry) don't inherit the shell's PATH, so tools
 /// installed under e.g. ~/.local/bin (`claude`) or version managers aren't found
@@ -215,6 +215,19 @@ fn notify(title: String, body: String) -> Result<(), String> {
     show_notification(&title, &body)
 }
 
+/// Open an http(s) URL in the default browser (used for a session's PR link).
+#[tauri::command]
+fn open_url(url: String) -> Result<(), String> {
+    if !(url.starts_with("http://") || url.starts_with("https://")) {
+        return Err("refusing to open non-http url".into());
+    }
+    std::process::Command::new("xdg-open")
+        .arg(&url)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 /// Open (or focus) a separate window showing a single session's terminal. The
 /// window reconnects to the already-running PTY by id; label is `popout-<id>`.
 #[tauri::command]
@@ -344,6 +357,8 @@ fn main() {
             list_fonts,
             app_info,
             notify,
+            open_url,
+            session_pr,
             open_session_window,
             open_pty,
             write_pty,

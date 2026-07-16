@@ -19,13 +19,31 @@ const SCAN_LIMIT: usize = 500;
 const SCAN_LINES: usize = 20_000;
 const PREVIEW_CHARS: usize = 100;
 
+/// A pull request claude created/updated in this session (from a git tool's
+/// `gitOperation.pr` record in the transcript).
+#[derive(Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct PrInfo {
+    pr_number: u64,
+    pr_url: String,
+}
+
 #[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct SessionInfo {
     id: String,
     cwd: String,
     preview: String,
     name: String, // the session's -n display name (customTitle), "" if none
     mtime: u64,
+    pr: Option<PrInfo>,
+}
+
+struct Head {
+    cwd: String,
+    preview: String,
+    name: String,
+    pr: Option<PrInfo>,
 }
 
 /// Discover resumable Claude sessions from the shared on-disk store
@@ -79,18 +97,43 @@ fn scan_sessions() -> Vec<SessionInfo> {
         let Some(id) = path.file_stem().and_then(|s| s.to_str()) else {
             continue;
         };
-        let Some((cwd, preview, name)) = transcript_head(&path) else {
+        let Some(h) = transcript_head(&path) else {
             continue;
         };
         out.push(SessionInfo {
             id: id.to_string(),
-            cwd,
-            preview,
-            name,
+            cwd: h.cwd,
+            preview: h.preview,
+            name: h.name,
             mtime,
+            pr: h.pr,
         });
     }
     out
+}
+
+/// The transcript path for a session id running in `cwd` (project dir = the cwd
+/// with '/' and '.' turned into '-', matching Claude's on-disk layout).
+fn transcript_path(cwd: &str, id: &str) -> Option<PathBuf> {
+    let enc: String = cwd
+        .chars()
+        .map(|c| if c == '/' || c == '.' { '-' } else { c })
+        .collect();
+    Some(projects_dir()?.join(enc).join(format!("{id}.jsonl")))
+}
+
+/// The PR (if any) claude opened/updated in a specific session — used to refresh
+/// a live session's PR badge without re-scanning every transcript.
+#[tauri::command]
+pub async fn session_pr(id: String, cwd: String) -> Result<Option<PrInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        transcript_path(&cwd, &id)
+            .as_deref()
+            .and_then(transcript_head)
+            .and_then(|h| h.pr)
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Read a transcript for its cwd, first real user message, and the session's
@@ -100,23 +143,40 @@ fn scan_sessions() -> Vec<SessionInfo> {
 /// one). Skips command/system-reminder/bash envelope messages, like `cs`'s jq
 /// filter. Parsing is gated: once cwd+preview are known we only parse the cheap
 /// `custom-title` lines, so unnamed sessions cost little beyond the head.
-fn transcript_head(path: &PathBuf) -> Option<(String, String, String)> {
+fn transcript_head(path: &std::path::Path) -> Option<Head> {
     let file = File::open(path).ok()?;
     let reader = BufReader::new(file);
 
     let mut cwd: Option<String> = None;
     let mut preview: Option<String> = None;
     let mut name = String::new();
+    let mut pr: Option<PrInfo> = None;
 
     for line in reader.lines().take(SCAN_LINES).map_while(Result::ok) {
         let need_meta = cwd.is_none() || preview.is_none();
         let is_title = line.contains("\"type\":\"custom-title\"");
-        if !need_meta && !is_title {
+        // A git tool result records a PR under toolUseResult.gitOperation.pr.
+        let is_git = line.contains("\"gitOperation\"");
+        if !need_meta && !is_title && !is_git {
             continue;
         }
         let Ok(entry) = serde_json::from_str::<Value>(&line) else {
             continue;
         };
+        if is_git {
+            if let Some(p) = entry.pointer("/toolUseResult/gitOperation/pr") {
+                if let (Some(number), Some(url)) = (
+                    p.get("number").and_then(Value::as_u64),
+                    p.get("url").and_then(Value::as_str),
+                ) {
+                    pr = Some(PrInfo {
+                        pr_number: number,
+                        pr_url: url.to_string(),
+                    }); // last one wins (most recent PR action)
+                }
+            }
+            continue;
+        }
         if is_title {
             if let Some(t) = entry.get("customTitle").and_then(Value::as_str) {
                 let t = t.trim();
@@ -140,7 +200,12 @@ fn transcript_head(path: &PathBuf) -> Option<(String, String, String)> {
         }
     }
 
-    Some((cwd?, preview?, name))
+    Some(Head {
+        cwd: cwd?,
+        preview: preview?,
+        name,
+        pr,
+    })
 }
 
 /// Extract displayable text from a user message, or None for envelope-only

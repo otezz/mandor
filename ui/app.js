@@ -423,6 +423,7 @@ function persist() {
       name: s.name,
       groupId: s.groupId ?? null,
       wantRemote: !!s.wantRemote,
+      pr: s.pr || null,
     }));
   try {
     localStorage.setItem(
@@ -668,7 +669,8 @@ function buildRow(s) {
   const name = document.createElement("span");
   name.className = "s-name";
   name.textContent = s.name + (s.exited ? " (exited)" : "");
-  name.title = !s.live && !s.exited ? `${s.cwd} — click to resume` : s.cwd;
+  const cwdLine = !s.live && !s.exited ? `${s.cwd} — click to resume` : s.cwd;
+  name.title = `${cwdLine}\nsession: ${s.id}`;
   const close = document.createElement("span");
   close.className = "s-close";
   close.textContent = "✕";
@@ -681,7 +683,19 @@ function buildRow(s) {
     inc.title = "Incognito — isolated config dir, nothing saved to disk";
     row.append(inc);
   }
-  row.append(name, close);
+  row.append(name);
+  if (s.pr && s.pr.prUrl) {
+    const pr = document.createElement("span");
+    pr.className = "s-pr";
+    pr.textContent = `#${s.pr.prNumber}`;
+    pr.title = `Pull request ${s.pr.prUrl} — click to open`;
+    pr.addEventListener("click", (e) => {
+      e.stopPropagation();
+      invoke("open_url", { url: s.pr.prUrl }).catch(() => {});
+    });
+    row.append(pr);
+  }
+  row.append(close);
 
   row.addEventListener("click", (e) => {
     if (justDragged || e.target === close || name.isContentEditable) return;
@@ -937,6 +951,22 @@ function closeContextMenu() {
   contextMenuEl = null;
 }
 
+function copyText(text) {
+  navigator.clipboard?.writeText(text).catch(() => {
+    const ta = document.createElement("textarea");
+    ta.value = text;
+    ta.style.cssText = "position:fixed;opacity:0";
+    document.body.appendChild(ta);
+    ta.select();
+    try {
+      document.execCommand("copy");
+    } catch {
+      /* ignore */
+    }
+    ta.remove();
+  });
+}
+
 function openContextMenu(e, kind, id) {
   closeContextMenu();
   const items = [];
@@ -954,6 +984,16 @@ function openContextMenu(e, kind, id) {
       },
     });
     items.push({ label: "Open in new window", run: () => popOutSession(id) });
+    if (s.pr && s.pr.prUrl) {
+      items.push({
+        label: `Open PR #${s.pr.prNumber}`,
+        run: () => invoke("open_url", { url: s.pr.prUrl }).catch(() => {}),
+      });
+    }
+    items.push({
+      label: "Copy session ID",
+      run: () => copyText(s.id),
+    });
     items.push({ sep: true });
     const moveTo = [
       {
@@ -1090,6 +1130,7 @@ function addSession(rec) {
     wantModel: rec.wantModel || "",
     wantRemote: !!rec.wantRemote,
     incognito: !!rec.incognito, // isolated config dir, nothing saved to disk
+    pr: rec.pr || null, // { prNumber, prUrl } if claude opened a PR in it
     live: !!rec.live, // a PTY is running for this session
     exited: false,
     term: null,
@@ -1319,6 +1360,20 @@ function refreshBadge(s) {
 // status-line tick), which was making finished/idle sessions flash amber.
 const WORK_ATTENTION_MS = 1500;
 
+// Look up the session's PR from its transcript (claude records one when it runs
+// a PR git op). Refreshed when a turn ends, so a just-opened PR shows up soon.
+function refreshSessionPr(s) {
+  if (!s || s.incognito) return; // incognito transcripts aren't in the shared store
+  invoke("session_pr", { id: s.id, cwd: s.cwd })
+    .then((pr) => {
+      if (JSON.stringify(pr ?? null) === JSON.stringify(s.pr ?? null)) return;
+      s.pr = pr || null;
+      renderSessionList();
+      persist();
+    })
+    .catch(() => {});
+}
+
 function markWorking(s) {
   if (!s.working) {
     s.working = true;
@@ -1335,6 +1390,7 @@ function markWorking(s) {
       notifyAttention(s); // notify for any session (guarded by unfocused)
     }
     refreshBadge(s);
+    refreshSessionPr(s); // a PR may have just been opened this turn
   }, 900);
 }
 
@@ -1345,6 +1401,7 @@ function onBell(s) {
   if (s.id !== activeId) s.attention = true;
   notifyAttention(s);
   refreshBadge(s);
+  refreshSessionPr(s);
 }
 
 // The webview's own focus is more reliable than Tauri's window focus event on
@@ -1570,6 +1627,9 @@ async function restore() {
   }
   renderSessionList();
   persist();
+  // Refresh each session's PR badge from its transcript (persisted value may be
+  // stale, and cold-restored sessions have none yet).
+  for (const s of sessions.values()) refreshSessionPr(s);
   // Prefer a live session (reload) over resuming a cold one; fall back to the
   // first cold session (full restart) so the last work resumes automatically.
   const first =

@@ -410,6 +410,24 @@ body.maximized .window {
   opacity: 0.85;
 }
 
+/* PR badge on a session pill (click to open the PR) */
+.s-pr {
+  flex: none;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1;
+  padding: 2px 5px;
+  border-radius: 4px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  cursor: pointer;
+}
+
+.s-pr:hover {
+  background: var(--accent);
+  color: var(--titlebar);
+}
+
 .s-name[contenteditable="true"] {
   background: var(--bg);
   border-radius: 4px;
