@@ -285,6 +285,13 @@
         margin: 1rem 0 0;
         font-size: 1.05rem;
       }
+      .sec-head p a {
+        color: var(--mauve);
+        border-bottom: 1px solid color-mix(in srgb, var(--mauve) 45%, transparent);
+      }
+      .sec-head p a:hover {
+        border-bottom-color: var(--mauve);
+      }
 
       /* --- manifesto --- */
       .manifesto {
@@ -658,7 +665,11 @@
           navigate.
         </p>
         <div class="cta rise d3">
-          <a class="btn primary" href="#install">Get the .deb</a>
+          <a
+            class="btn primary"
+            href="https://github.com/otezz/mandor/releases/latest"
+            >Get the .deb</a
+          >
           <a class="btn ghost" href="#how">See how it works</a>
         </div>
         <p class="hero-meta rise d3">
@@ -800,9 +811,11 @@
           <span class="eyebrow">Get started</span>
           <h2>Install the build, or run it from source.</h2>
           <p>
-            Linux is the primary target today. Mandor launches
-            <code>claude</code> from your <code>PATH</code>, so make sure the CLI
-            runs in a terminal first.
+            <a href="https://github.com/otezz/mandor/releases/latest"
+              >Download the latest <code>.deb</code></a
+            >, then install it with the command below. Linux is the primary
+            target today; Mandor launches <code>claude</code> from your
+            <code>PATH</code>, so make sure the CLI runs in a terminal first.
           </p>
         </div>
         <div class="install">

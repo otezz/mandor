@@ -55,7 +55,8 @@ conversation — it hosts the genuine `claude` process and stays out of the way.
 
 ## Install
 
-Download or build the `.deb`, then:
+[Download the latest `.deb`](https://github.com/otezz/mandor/releases/latest)
+(or build it yourself, below), then:
 
 ```bash
 sudo dpkg -i Mandor_*_amd64.deb
