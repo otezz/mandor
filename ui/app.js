@@ -37,6 +37,7 @@ let settings = {
   ligatures: false,
   bellSound: true, // audible beep when a session rings the terminal bell
   bellSoundFile: "", // custom sound file path; "" = built-in synth beep
+  resumeOnStart: false, // after a full restart, resume all sessions (staggered)
   remoteByDefault: false,
   customThemes: [],
 };
@@ -1686,6 +1687,23 @@ async function closeSession(id) {
   persist();
 }
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+// Opt-in: resume every restored (cold) session on startup, spawned one-by-one
+// with a gap so N `claude` processes don't stampede at launch. Only the active
+// session's terminal is visible; the rest stay detached until switched to
+// (keeping the DOM light). Skips live/exited/incognito sessions.
+async function resumeAllOnStart() {
+  for (const id of [...sessionOrder]) {
+    if (id === activeId) continue; // the active one is resumed by setActive
+    const s = sessions.get(id);
+    if (!s || s.live || s.exited || s.incognito) continue;
+    if (!s.term) attachTerminal(s);
+    await spawnSession(s);
+    await sleep(400);
+  }
+}
+
 // On launch: reconnect to PTYs that survived a webview reload, and restore
 // persisted sessions from a full restart as cold entries (resumed on click).
 async function restore() {
@@ -1739,6 +1757,7 @@ async function restore() {
     sessionOrder.find((id) => sessions.get(id)?.live) ??
     sessionOrder.find((id) => sessions.has(id));
   if (first) setActive(first);
+  if (settings.resumeOnStart) resumeAllOnStart();
 }
 
 // Pop-out window: render just the one session, reconnected to its running PTY.
@@ -2860,6 +2879,13 @@ function openSettings() {
     settings.notifications !== false;
   document.getElementById("set-bell-sound").checked =
     settings.bellSound !== false;
+  document.getElementById("set-resume-on-start").checked =
+    !!settings.resumeOnStart;
+  invoke("plugin:autostart|is_enabled")
+    .then((on) => {
+      document.getElementById("set-run-on-startup").checked = !!on;
+    })
+    .catch(() => {});
   setBellFileLabel();
   document.getElementById("set-remote-default").checked =
     !!settings.remoteByDefault;
@@ -2948,6 +2974,23 @@ document.getElementById("set-bell-sound").addEventListener("change", (e) => {
   if (e.target.checked) playBellSound(); // preview + unlock audio on the gesture
   persist();
 });
+document
+  .getElementById("set-resume-on-start")
+  .addEventListener("change", (e) => {
+    settings.resumeOnStart = e.target.checked;
+    persist();
+  });
+document
+  .getElementById("set-run-on-startup")
+  .addEventListener("change", async (e) => {
+    const on = e.target.checked;
+    try {
+      await invoke(on ? "plugin:autostart|enable" : "plugin:autostart|disable");
+    } catch (err) {
+      console.error(err);
+      e.target.checked = !on; // OS refused — reflect the real state
+    }
+  });
 document
   .getElementById("set-remote-default")
   .addEventListener("change", (e) => {

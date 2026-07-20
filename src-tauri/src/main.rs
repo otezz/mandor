@@ -312,6 +312,11 @@ fn main() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_notification::init())
+        // Optional "launch Mandor at login" (toggled from Settings → Behavior).
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None,
+        ))
         // Remember the main window's size/position across launches.
         .plugin(tauri_plugin_window_state::Builder::default().build())
         .manage(PtyState::default())
