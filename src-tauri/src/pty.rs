@@ -223,7 +223,9 @@ pub struct RunningPty {
 ///   app restart. Only for fresh sessions; mutually exclusive with `resume`.
 /// - `model`: model alias/name (`--model <m>`), e.g. "opus"/"sonnet"/"haiku".
 /// - `remote_control`: register with the Claude app for phone/web access
-///   (`--remote-control`) — works because the session is interactive.
+///   (`--remote-control`). Only pass this for FRESH sessions — combined with
+///   `--resume` the CLI tries to reattach to the prior (dead) registration and
+///   fails; a resumed session re-enables it in-session via `/remote-control`.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn open_pty(

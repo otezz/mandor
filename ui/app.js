@@ -21,6 +21,7 @@ let activeId = null;
 let groups = [];
 let ungroupedCollapsed = false;
 let savedSessions = []; // persisted session records, restored on launch
+let savedActiveId = null; // the session that was active last, restored on launch
 let recentDirs = []; // recently-used session directories, most recent first
 let sidebarCollapsed = false;
 let appFocused = true;
@@ -435,6 +436,7 @@ function persist() {
         sidebarCollapsed,
         settings,
         sessions: sess,
+        activeId,
       }),
     );
   } catch (e) {
@@ -465,6 +467,7 @@ function loadStore() {
     // (covers old auto/light/dark values and deleted custom themes)
     if (!getTheme(settings.theme)) settings.theme = "frappe";
     savedSessions = Array.isArray(data.sessions) ? data.sessions : [];
+    savedActiveId = data.activeId ?? null;
   } catch (e) {
     console.error(e);
   }
@@ -984,6 +987,17 @@ function openContextMenu(e, kind, id) {
       },
     });
     items.push({ label: "Open in new window", run: () => popOutSession(id) });
+    if (s.live) {
+      // Resume can't pass --remote-control (the CLI would fail reconnecting to a
+      // dead registration), so enable it in-session — a fresh registration.
+      items.push({
+        label: "Enable remote control",
+        run: () =>
+          invoke("write_pty", { id, data: "/remote-control\r" }).catch(
+            () => {},
+          ),
+      });
+    }
     if (s.pr && s.pr.prUrl) {
       items.push({
         label: `Open PR #${s.pr.prNumber}`,
@@ -1355,10 +1369,14 @@ function refreshBadge(s) {
   row.classList.toggle("working", bg && !!s.working && !s.attention);
 }
 
-// Only treat output→idle as "finished a turn" if it worked for at least this
-// long — avoids flagging attention for brief idle repaints (a resize redraw, a
-// status-line tick), which was making finished/idle sessions flash amber.
+// Treat output→idle as "finished a turn" only if the burst lasted at least this
+// long AND carried at least this many bytes. The duration gate skips brief
+// repaints (a resize redraw); the byte gate skips small *periodic* output that
+// stays "working" without a real turn — notably remote-control bridge
+// heartbeats, which were raising a false amber dot on idle sessions. A real
+// response streams kilobytes; heartbeat/status ticks are tens of bytes.
 const WORK_ATTENTION_MS = 1500;
+const WORK_ATTENTION_BYTES = 1024;
 
 // Look up the session's PR from its transcript (claude records one when it runs
 // a PR git op). Refreshed when a turn ends, so a just-opened PR shows up soon.
@@ -1374,18 +1392,22 @@ function refreshSessionPr(s) {
     .catch(() => {});
 }
 
-function markWorking(s) {
+function markWorking(s, len = 0) {
   if (!s.working) {
     s.working = true;
     s.attention = false;
     s.workStart = Date.now();
+    s.workBytes = 0;
     refreshBadge(s);
   }
+  s.workBytes = (s.workBytes || 0) + len;
   clearTimeout(s.workTimer);
   s.workTimer = setTimeout(() => {
     s.working = false;
     const worked = Date.now() - (s.workStart || Date.now());
-    if (worked >= WORK_ATTENTION_MS) {
+    const substantial =
+      worked >= WORK_ATTENTION_MS && (s.workBytes || 0) >= WORK_ATTENTION_BYTES;
+    if (substantial) {
       if (s.id !== activeId) s.attention = true; // dot only for background
       notifyAttention(s); // notify for any session (guarded by unfocused)
     }
@@ -1438,14 +1460,17 @@ async function spawnSession(s) {
     remoteControl: false,
     incognito: !!s.incognito,
   };
-  args.remoteControl = !!s.wantRemote; // applies to new and resumed alike
   if (s.spawnMode === "new") {
     args.sessionId = s.id;
     args.name = s.name;
     args.worktree = s.wantWorktree;
     args.model = s.wantModel || null;
+    args.remoteControl = !!s.wantRemote; // only a fresh session can register remote control
   } else {
     args.resume = s.id;
+    // NB: --remote-control + --resume makes the CLI try to reattach to a dead
+    // registration and fail ("Couldn't reconnect… start a fresh session without
+    // --resume"); enable it in-session via /remote-control instead.
   }
   s.spawnMode = "resume"; // any later respawn resumes
   try {
@@ -1482,6 +1507,7 @@ function setActive(id) {
     nudgeRepaint(s);
   }
   if (s && !s.live && !s.exited && s.term) spawnSession(s);
+  persist(); // remember the active session so it reopens on restart
 }
 
 // After reconnecting to a live PTY (webview reload) the fresh xterm is empty and
@@ -1630,9 +1656,10 @@ async function restore() {
   // Refresh each session's PR badge from its transcript (persisted value may be
   // stale, and cold-restored sessions have none yet).
   for (const s of sessions.values()) refreshSessionPr(s);
-  // Prefer a live session (reload) over resuming a cold one; fall back to the
-  // first cold session (full restart) so the last work resumes automatically.
+  // Reopen the session that was active last (whether live after a reload or cold
+  // after a restart); otherwise prefer a live one, then the first in the list.
   const first =
+    (savedActiveId && sessions.has(savedActiveId) ? savedActiveId : null) ??
     sessionOrder.find((id) => sessions.get(id)?.live) ??
     sessionOrder.find((id) => sessions.has(id));
   if (first) setActive(first);
@@ -1664,8 +1691,9 @@ async function runPopout() {
 listen("pty-output", ({ payload }) => {
   const s = sessions.get(payload.id);
   if (!s || !s.term) return;
-  s.term.write(base64ToBytes(payload.b64));
-  if (!POPOUT) markWorking(s); // drive the sidebar activity indicator
+  const bytes = base64ToBytes(payload.b64);
+  s.term.write(bytes);
+  if (!POPOUT) markWorking(s, bytes.length); // drive the sidebar activity indicator
 });
 
 listen("pty-exit", ({ payload }) => {

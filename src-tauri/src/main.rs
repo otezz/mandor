@@ -19,6 +19,18 @@ use pty::{
     close_pty, open_pty, resize_pty, running_ptys, set_claude_path, sweep_incognito_dirs,
     write_pty, PtyState,
 };
+use tauri_plugin_window_state::{AppHandleExt, StateFlags};
+
+/// Persist the window's size/position via the window-state plugin, but only while
+/// the main window is visible — Mandor hides to tray instead of closing, and a
+/// hidden window reports stale geometry that would overwrite the good state.
+fn save_window_geometry(app: &tauri::AppHandle) {
+    if let Some(w) = app.get_webview_window("main") {
+        if w.is_visible().unwrap_or(false) {
+            let _ = app.save_window_state(StateFlags::all());
+        }
+    }
+}
 use sessions::{list_sessions, session_pr};
 
 /// GUI launches (from a .desktop entry) don't inherit the shell's PATH, so tools
@@ -80,12 +92,14 @@ fn ensure_tools_on_path() {
 /// that Wayland drops after a hide/show cycle.
 #[tauri::command]
 fn hide_to_tray(window: tauri::WebviewWindow) {
+    save_window_geometry(window.app_handle()); // capture position before hiding
     let _ = window.hide();
 }
 
 /// Really quit (kills sessions via the ExitRequested handler) — from the app menu.
 #[tauri::command]
 fn quit_app(app: tauri::AppHandle) {
+    save_window_geometry(&app);
     app.exit(0);
 }
 
@@ -151,6 +165,7 @@ async fn update_available(startup: tauri::State<'_, AppStartup>) -> Result<bool,
 /// via the ExitRequested handler; persisted sessions come back cold, resumable.
 #[tauri::command]
 fn restart_app(app: tauri::AppHandle) {
+    save_window_geometry(&app);
     app.restart();
 }
 
@@ -303,7 +318,10 @@ fn main() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => show_main(app),
-                    "quit" => app.exit(0),
+                    "quit" => {
+                        save_window_geometry(app);
+                        app.exit(0);
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, event| {
@@ -330,6 +348,7 @@ fn main() {
                         // titlebar button (hide_to_tray command). Deferred so hide()
                         // takes effect on GTK.
                         api.prevent_close();
+                        save_window_geometry(win_hide.app_handle()); // before hiding
                         let w = win_hide.clone();
                         let _ = win_hide.app_handle().run_on_main_thread(move || {
                             let _ = w.hide();
