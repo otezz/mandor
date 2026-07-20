@@ -211,7 +211,7 @@ pub struct RunningPty {
 
 /// Spawn interactive `claude` in a PTY under `cwd` and start streaming its output.
 ///
-/// Flags mirror the interactive `claude` CLI (not mandor's headless engine):
+/// Flags mirror the interactive `claude` CLI:
 /// - `resume`: continue a session (`--resume <id>`).
 /// - `name`: display name recorded in claude's metadata (`-n`), so it shows in
 ///   `/resume` and the desktop app — only for fresh sessions (resume keeps the
