@@ -274,6 +274,12 @@ pub fn open_pty(
     cmd.cwd(&cwd);
     // Inherited env carries our merged PATH; TERM isn't inherited on a GUI launch.
     cmd.env("TERM", "xterm-256color");
+    // Make claude ring the terminal bell on its notifications so our onBell hook
+    // fires (attention indicator, desktop notification, bell sound). Scoped to
+    // this session via --settings; the user's global config is untouched, and it
+    // works on resume too (unlike --remote-control).
+    cmd.arg("--settings");
+    cmd.arg(r#"{"preferredNotifChannel":"terminal_bell"}"#);
     // Incognito: run against a throwaway config dir so nothing lands in ~/.claude.
     let incognito_dir = if incognito {
         let dir = setup_incognito_config_dir(&id);

@@ -1412,6 +1412,8 @@ function markWorking(s, len = 0) {
       worked >= WORK_ATTENTION_MS && (s.workBytes || 0) >= WORK_ATTENTION_BYTES;
     if (substantial) {
       if (s.id !== activeId) s.attention = true; // dot only for background
+      playBellSound(); // audible end-of-turn cue — same signal as the dot,
+      // independent of whether claude emits a terminal bell
       notifyAttention(s); // notify for any session (guarded by unfocused)
     }
     refreshBadge(s);
@@ -1419,62 +1421,74 @@ function markWorking(s, len = 0) {
   }, 900);
 }
 
-// xterm has no audible bell — it only fires onBell. Play a custom sound file if
-// one is set, otherwise synthesize a short beep via Web Audio (no asset needed).
+// xterm has no audible bell — it only fires onBell. We play through Web Audio,
+// not an <audio> element: WebKit blocks HTMLMediaElement.play() unless it has a
+// recent user gesture, and the bell fires from a background PTY event with no
+// gesture of its own — so <audio> stays silent while a resumed AudioContext
+// plays fine. The sound is decoded once into an AudioBuffer (custom file or the
+// bundled default); a short synth beep is the fallback if decoding is
+// unavailable.
 let bellAudioCtx = null;
-let bellAudio = null; // cached <audio> for a custom sound file
+let bellBuffer = null; // decoded AudioBuffer of the current bell sound
 
-const AUDIO_MIME = {
-  mp3: "audio/mpeg",
-  wav: "audio/wav",
-  ogg: "audio/ogg",
-  oga: "audio/ogg",
-  opus: "audio/ogg",
-  flac: "audio/flac",
-  m4a: "audio/mp4",
-  aac: "audio/aac",
-  weba: "audio/webm",
-};
-
-// The bundled default bell sound (a short Pixabay notification, served locally).
-function defaultBellAudio() {
-  const a = new Audio("notification.mp3");
-  a.preload = "auto";
-  return a;
+function ensureAudioCtx() {
+  if (!bellAudioCtx) {
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (AC) bellAudioCtx = new AC();
+  }
+  return bellAudioCtx;
 }
 
-// Load the bell sound into a cached <audio>: a custom file (path → data: URI via
-// the backend) if set, otherwise the bundled default. Called on load and change.
+// WebKit keeps the AudioContext "suspended" until a user gesture. Resume it on
+// the first interaction so later event-driven bells can play without one.
+function unlockAudio() {
+  const ctx = ensureAudioCtx();
+  if (ctx && ctx.state === "suspended") ctx.resume().catch(() => {});
+}
+for (const ev of ["pointerdown", "keydown"])
+  window.addEventListener(ev, unlockAudio, { capture: true, passive: true });
+
+function b64ToArrayBuffer(b64) {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes.buffer;
+}
+
+// Decode the bell sound (a custom file via the backend, else the bundled
+// default) into an AudioBuffer. Called on load and whenever the setting changes.
 async function loadBellSound() {
-  const path = settings.bellSoundFile;
-  if (!path) {
-    bellAudio = defaultBellAudio();
-    return;
-  }
+  bellBuffer = null;
+  const ctx = ensureAudioCtx();
+  if (!ctx) return;
   try {
-    const b64 = await invoke("read_audio_data", { path });
-    const ext = path.split(".").pop().toLowerCase();
-    bellAudio = new Audio(`data:${AUDIO_MIME[ext] || "audio/*"};base64,${b64}`);
-    bellAudio.preload = "auto";
+    let arr;
+    const path = settings.bellSoundFile;
+    if (path) {
+      arr = b64ToArrayBuffer(await invoke("read_audio_data", { path }));
+    } else {
+      arr = await (await fetch("notification.mp3")).arrayBuffer();
+    }
+    bellBuffer = await ctx.decodeAudioData(arr);
   } catch {
-    bellAudio = defaultBellAudio(); // unreadable/too big → bundled default
+    bellBuffer = null; // undecodable → synth beep fallback
   }
 }
 
 function synthBeep() {
   try {
-    bellAudioCtx =
-      bellAudioCtx || new (window.AudioContext || window.webkitAudioContext)();
-    if (bellAudioCtx.state === "suspended") bellAudioCtx.resume();
-    const t = bellAudioCtx.currentTime;
-    const osc = bellAudioCtx.createOscillator();
-    const gain = bellAudioCtx.createGain();
+    const ctx = ensureAudioCtx();
+    if (!ctx) return;
+    if (ctx.state === "suspended") ctx.resume();
+    const t = ctx.currentTime;
+    const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
     osc.type = "sine";
     osc.frequency.value = 880;
     gain.gain.setValueAtTime(0.0001, t);
     gain.gain.exponentialRampToValueAtTime(0.15, t + 0.01);
     gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
-    osc.connect(gain).connect(bellAudioCtx.destination);
+    osc.connect(gain).connect(ctx.destination);
     osc.start(t);
     osc.stop(t + 0.24);
   } catch {
@@ -1484,12 +1498,21 @@ function synthBeep() {
 
 function playBellSound() {
   if (!settings.bellSound) return;
-  if (bellAudio) {
-    bellAudio.currentTime = 0;
-    bellAudio.play().catch(() => synthBeep()); // fall back if the file won't play
-  } else {
-    synthBeep();
+  const ctx = ensureAudioCtx();
+  if (!ctx) return;
+  if (ctx.state === "suspended") ctx.resume().catch(() => {});
+  if (bellBuffer) {
+    try {
+      const src = ctx.createBufferSource();
+      src.buffer = bellBuffer;
+      src.connect(ctx.destination);
+      src.start();
+      return;
+    } catch {
+      /* fall through to synth beep */
+    }
   }
+  synthBeep();
 }
 
 // Terminal bell — claude rings it when a turn finishes / it needs input.
