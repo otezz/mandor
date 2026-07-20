@@ -491,6 +491,35 @@
               >
             </label>
             <label class="set-check">
+              <input id="set-bell-sound" type="checkbox" />
+              <span
+                >Play a sound when a session rings the terminal bell (e.g.
+                claude's end-of-turn bell)</span
+              >
+            </label>
+            <div class="set-field">
+              <span class="set-label">Bell sound</span>
+              <div class="set-dir-row">
+                <span id="set-bell-file" class="set-dir-path"
+                  >Default sound</span
+                >
+                <button id="set-bell-file-btn" class="set-ghost" type="button">
+                  Choose…
+                </button>
+                <button
+                  id="set-bell-file-clear"
+                  class="set-ghost"
+                  type="button"
+                >
+                  Default
+                </button>
+              </div>
+              <span class="set-hint"
+                >Custom sound file (wav, mp3, ogg, flac…) played on the
+                bell.</span
+              >
+            </div>
+            <label class="set-check">
               <input id="set-remote-default" type="checkbox" />
               <span>Enable remote control for all new sessions by default</span>
             </label>

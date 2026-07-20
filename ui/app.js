@@ -35,6 +35,8 @@ let settings = {
   terminalFontSize: 11, // points (converted to px for xterm), like other terminals
   terminalFont: "JetBrains Mono",
   ligatures: false,
+  bellSound: true, // audible beep when a session rings the terminal bell
+  bellSoundFile: "", // custom sound file path; "" = built-in synth beep
   remoteByDefault: false,
   customThemes: [],
 };
@@ -1416,11 +1418,85 @@ function markWorking(s, len = 0) {
   }, 900);
 }
 
+// xterm has no audible bell — it only fires onBell. Play a custom sound file if
+// one is set, otherwise synthesize a short beep via Web Audio (no asset needed).
+let bellAudioCtx = null;
+let bellAudio = null; // cached <audio> for a custom sound file
+
+const AUDIO_MIME = {
+  mp3: "audio/mpeg",
+  wav: "audio/wav",
+  ogg: "audio/ogg",
+  oga: "audio/ogg",
+  opus: "audio/ogg",
+  flac: "audio/flac",
+  m4a: "audio/mp4",
+  aac: "audio/aac",
+  weba: "audio/webm",
+};
+
+// The bundled default bell sound (a short Pixabay notification, served locally).
+function defaultBellAudio() {
+  const a = new Audio("notification.mp3");
+  a.preload = "auto";
+  return a;
+}
+
+// Load the bell sound into a cached <audio>: a custom file (path → data: URI via
+// the backend) if set, otherwise the bundled default. Called on load and change.
+async function loadBellSound() {
+  const path = settings.bellSoundFile;
+  if (!path) {
+    bellAudio = defaultBellAudio();
+    return;
+  }
+  try {
+    const b64 = await invoke("read_audio_data", { path });
+    const ext = path.split(".").pop().toLowerCase();
+    bellAudio = new Audio(`data:${AUDIO_MIME[ext] || "audio/*"};base64,${b64}`);
+    bellAudio.preload = "auto";
+  } catch {
+    bellAudio = defaultBellAudio(); // unreadable/too big → bundled default
+  }
+}
+
+function synthBeep() {
+  try {
+    bellAudioCtx =
+      bellAudioCtx || new (window.AudioContext || window.webkitAudioContext)();
+    if (bellAudioCtx.state === "suspended") bellAudioCtx.resume();
+    const t = bellAudioCtx.currentTime;
+    const osc = bellAudioCtx.createOscillator();
+    const gain = bellAudioCtx.createGain();
+    osc.type = "sine";
+    osc.frequency.value = 880;
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(0.15, t + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.22);
+    osc.connect(gain).connect(bellAudioCtx.destination);
+    osc.start(t);
+    osc.stop(t + 0.24);
+  } catch {
+    /* audio unavailable — ignore */
+  }
+}
+
+function playBellSound() {
+  if (!settings.bellSound) return;
+  if (bellAudio) {
+    bellAudio.currentTime = 0;
+    bellAudio.play().catch(() => synthBeep()); // fall back if the file won't play
+  } else {
+    synthBeep();
+  }
+}
+
 // Terminal bell — claude rings it when a turn finishes / it needs input.
 function onBell(s) {
   clearTimeout(s.workTimer);
   s.working = false;
   if (s.id !== activeId) s.attention = true;
+  playBellSound();
   notifyAttention(s);
   refreshBadge(s);
   refreshSessionPr(s);
@@ -2623,6 +2699,7 @@ function applySettings() {
   applyTheme();
   applyTerminalFontSize();
   applyTerminalFont();
+  loadBellSound();
   invoke("set_claude_path", { path: settings.claudePath || null }).catch(
     () => {},
   );
@@ -2681,6 +2758,14 @@ function changeFontSize(delta) {
 function setDefCwdLabelText() {
   setDefcwdPath.textContent = settings.defaultCwd || "— none —";
   setDefcwdPath.title = settings.defaultCwd || "";
+}
+
+function setBellFileLabel() {
+  const el = document.getElementById("set-bell-file");
+  el.textContent = settings.bellSoundFile
+    ? baseName(settings.bellSoundFile)
+    : "Default sound";
+  el.title = settings.bellSoundFile || "";
 }
 
 function showSettingsSection(section) {
@@ -2773,6 +2858,9 @@ function openSettings() {
     settings.terminalFontSize || 11;
   document.getElementById("set-notifications").checked =
     settings.notifications !== false;
+  document.getElementById("set-bell-sound").checked =
+    settings.bellSound !== false;
+  setBellFileLabel();
   document.getElementById("set-remote-default").checked =
     !!settings.remoteByDefault;
   setDefCwdLabelText();
@@ -2855,6 +2943,11 @@ document.getElementById("set-notifications").addEventListener("change", (e) => {
   notificationsEnabled = e.target.checked;
   persist();
 });
+document.getElementById("set-bell-sound").addEventListener("change", (e) => {
+  settings.bellSound = e.target.checked;
+  if (e.target.checked) playBellSound(); // preview + unlock audio on the gesture
+  persist();
+});
 document
   .getElementById("set-remote-default")
   .addEventListener("change", (e) => {
@@ -2891,6 +2984,47 @@ document
 document.getElementById("set-defcwd-clear").addEventListener("click", () => {
   settings.defaultCwd = "";
   setDefCwdLabelText();
+  persist();
+});
+document
+  .getElementById("set-bell-file-btn")
+  .addEventListener("click", async () => {
+    try {
+      const file = await invoke("plugin:dialog|open", {
+        options: {
+          title: "Choose a bell sound",
+          filters: [
+            {
+              name: "Audio",
+              extensions: [
+                "wav",
+                "mp3",
+                "ogg",
+                "oga",
+                "opus",
+                "flac",
+                "m4a",
+                "aac",
+              ],
+            },
+          ],
+        },
+      });
+      if (file) {
+        settings.bellSoundFile = typeof file === "string" ? file : file.path;
+        setBellFileLabel();
+        await loadBellSound();
+        playBellSound(); // preview + unlock audio on this gesture
+        persist();
+      }
+    } catch (e) {
+      console.error(e);
+    }
+  });
+document.getElementById("set-bell-file-clear").addEventListener("click", () => {
+  settings.bellSoundFile = "";
+  setBellFileLabel();
+  loadBellSound();
   persist();
 });
 document

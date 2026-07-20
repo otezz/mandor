@@ -230,6 +230,23 @@ fn notify(title: String, body: String) -> Result<(), String> {
     show_notification(&title, &body)
 }
 
+/// Read a small audio file as base64 so the webview can play it via a data: URI
+/// (avoids asset-protocol scope config for an arbitrary user-picked path).
+#[tauri::command]
+async fn read_audio_data(path: String) -> Result<String, String> {
+    use base64::Engine as _;
+    tauri::async_runtime::spawn_blocking(move || {
+        let meta = std::fs::metadata(&path).map_err(|e| e.to_string())?;
+        if meta.len() > 5_000_000 {
+            return Err("audio file too large (max 5 MB)".into());
+        }
+        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+        Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
 /// Open an http(s) URL in the default browser (used for a session's PR link).
 #[tauri::command]
 fn open_url(url: String) -> Result<(), String> {
@@ -377,6 +394,7 @@ fn main() {
             app_info,
             notify,
             open_url,
+            read_audio_data,
             session_pr,
             open_session_window,
             open_pty,
