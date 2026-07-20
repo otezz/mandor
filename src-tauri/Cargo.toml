@@ -19,6 +19,8 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-window-state = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-autostart = "2"
+# Cross-platform system-font enumeration for the terminal-font picker.
+fontdb = "0.23"
 # Sent notifications directly (like notify-send): tauri-plugin-notification's
 # show() returns Ok on Linux but doesn't raise a banner in this environment.
 notify-rust = "4"

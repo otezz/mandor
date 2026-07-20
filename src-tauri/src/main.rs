@@ -169,24 +169,24 @@ fn restart_app(app: tauri::AppHandle) {
     app.restart();
 }
 
-/// Installed monospace font families (via fontconfig), for the terminal-font
-/// picker. Blocking `fc-list` runs off the main thread.
+/// Installed monospace font families, for the terminal-font picker. Uses fontdb
+/// (pure-Rust, cross-platform) so it works the same on Linux, macOS, and Windows
+/// without shelling out to fontconfig. The blocking scan runs off the main thread.
 #[tauri::command]
 async fn list_fonts() -> Result<Vec<String>, String> {
     tauri::async_runtime::spawn_blocking(|| {
         use std::collections::BTreeSet;
+        let mut db = fontdb::Database::new();
+        db.load_system_fonts();
         let mut families = BTreeSet::new();
-        if let Ok(out) = std::process::Command::new("fc-list")
-            .args([":spacing=100", "family"])
-            .output()
-        {
-            for line in String::from_utf8_lossy(&out.stdout).lines() {
-                // A line can list localized/aliased names comma-separated.
-                if let Some(name) = line.split(',').next() {
-                    let name = name.trim();
-                    if !name.is_empty() {
-                        families.insert(name.to_string());
-                    }
+        for face in db.faces() {
+            if !face.monospaced {
+                continue;
+            }
+            if let Some((name, _)) = face.families.first() {
+                let name = name.trim();
+                if !name.is_empty() {
+                    families.insert(name.to_string());
                 }
             }
         }
@@ -253,11 +253,26 @@ fn open_url(url: String) -> Result<(), String> {
     if !(url.starts_with("http://") || url.starts_with("https://")) {
         return Err("refusing to open non-http url".into());
     }
-    std::process::Command::new("xdg-open")
-        .arg(&url)
-        .spawn()
-        .map(|_| ())
-        .map_err(|e| e.to_string())
+    #[cfg(target_os = "linux")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("xdg-open");
+        c.arg(&url);
+        c
+    };
+    #[cfg(target_os = "macos")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("open");
+        c.arg(&url);
+        c
+    };
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        // `start` is a cmd builtin; the empty "" is the window-title arg it expects.
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", "start", "", &url]);
+        c
+    };
+    cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
 /// Open (or focus) a separate window showing a single session's terminal. The

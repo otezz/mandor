@@ -30,15 +30,19 @@ struct PtySession {
 /// config are symlinked in for parity, but conversation traces (projects/,
 /// history.jsonl, sessions/, shell-snapshots/, file-history/) are NOT — so claude
 /// writes them fresh inside this dir, and they vanish when it's deleted on close.
-/// Where incognito config dirs live: under `~/.cache` (XDG_CACHE_HOME), NOT /tmp.
-/// /tmp is reaped by the OS (systemd-tmpfiles ages files out, reboots wipe it),
-/// which would corrupt a session left open for days; the cache dir is durable for
-/// as long as the app runs, and we delete it on close and sweep it on startup.
+/// Where incognito config dirs live: under the platform cache dir (`~/.cache` on
+/// Linux, `~/Library/Caches` on macOS), NOT /tmp. /tmp is reaped by the OS
+/// (systemd-tmpfiles ages files out, reboots wipe it), which would corrupt a
+/// session left open for days; the cache dir is durable for as long as the app
+/// runs, and we delete it on close and sweep it on startup.
 fn incognito_base() -> Option<PathBuf> {
-    std::env::var_os("XDG_CACHE_HOME")
+    #[cfg(target_os = "macos")]
+    let cache = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library").join("Caches"));
+    #[cfg(not(target_os = "macos"))]
+    let cache = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
-        .map(|c| c.join("mandor").join("incognito"))
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")));
+    cache.map(|c| c.join("mandor").join("incognito"))
 }
 
 #[cfg(unix)]
