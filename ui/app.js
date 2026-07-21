@@ -1384,6 +1384,10 @@ const WORK_ATTENTION_BYTES = 1024;
 // than a typical mid-turn pause (tool run / thinking), so we alert once at the
 // end instead of on every pause.
 const NOTIFY_QUIET_MS = 2500;
+// After a reconnect/resume a session replays its transcript — a burst (or several)
+// of output that isn't a real turn. Ignore alerts for this long afterward so
+// startup doesn't ring. A real turn needs user input, which won't happen this fast.
+const BELL_WARMUP_MS = 8000;
 
 // Look up the session's PR from its transcript (claude records one when it runs
 // a PR git op). Refreshed when a turn ends, so a just-opened PR shows up soon.
@@ -1430,15 +1434,16 @@ function markWorking(s, len = 0) {
     const substantial =
       worked >= WORK_ATTENTION_MS && (s.turnBytes || 0) >= WORK_ATTENTION_BYTES;
     s.turnStart = null; // turn ended
-    // A turn ending during reconnect/resume is replayed transcript, not real.
-    const warmup = s.warmup;
-    s.warmup = false;
-    if (substantial) {
+    // Output during the warmup window is replayed transcript on reconnect/resume,
+    // not a real turn — ignore it (no dot, sound, or notification, and don't
+    // consume the once-per-episode alert, so the first real turn still rings).
+    const warming = Date.now() < (s.warmUntil || 0);
+    if (substantial && !warming) {
       if (s.id !== activeId) s.attention = true;
-      // Alert once per episode; cleared when the session is viewed.
       if (!s.alerted) {
+        // once per episode; cleared when the session is viewed
         s.alerted = true;
-        if (!warmup) playBellSound();
+        playBellSound();
         notifyAttention(s); // guarded by unfocused
       }
       refreshBadge(s);
@@ -1547,12 +1552,14 @@ function onBell(s) {
   clearTimeout(s.turnTimer); // claude's bell is the precise end — cancel the debounce
   s.working = false;
   s.turnStart = null;
-  const warmup = s.warmup;
-  s.warmup = false;
+  if (Date.now() < (s.warmUntil || 0)) {
+    refreshBadge(s); // ignore bells rung during reconnect/resume replay
+    return;
+  }
   if (s.id !== activeId) s.attention = true;
-  if (!warmup && !s.alerted) {
+  if (!s.alerted) {
     s.alerted = true;
-    playBellSound(); // swallow a bell rung during reconnect/resume replay, and
+    playBellSound();
     notifyAttention(s); // only alert once per episode
   }
   refreshBadge(s);
@@ -1599,10 +1606,10 @@ async function spawnSession(s) {
     args.worktree = s.wantWorktree;
     args.model = s.wantModel || null;
     args.remoteControl = !!s.wantRemote; // only a fresh session can register remote control
-    s.warmup = false; // a fresh session's first turn is real — ring for it
+    s.warmUntil = 0; // a fresh session's first turn is real — ring for it
   } else {
     args.resume = s.id;
-    s.warmup = true; // resuming replays the transcript; don't ring for that burst
+    s.warmUntil = Date.now() + BELL_WARMUP_MS; // resume replays the transcript; don't ring
     // NB: --remote-control + --resume makes the CLI try to reattach to a dead
     // registration and fail ("Couldn't reconnect… start a fresh session without
     // --resume"); enable it in-session via /remote-control instead.
@@ -1804,7 +1811,7 @@ async function restore() {
     if (s.live && !s.term) {
       attachTerminal(s);
       s.needsRepaint = true;
-      s.warmup = true; // the reconnect repaint burst isn't a real turn — no bell
+      s.warmUntil = Date.now() + BELL_WARMUP_MS; // reconnect repaint burst isn't a real turn
     }
   }
   renderSessionList();
