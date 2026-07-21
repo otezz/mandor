@@ -1380,6 +1380,10 @@ function refreshBadge(s) {
 // response streams kilobytes; heartbeat/status ticks are tens of bytes.
 const WORK_ATTENTION_MS = 1500;
 const WORK_ATTENTION_BYTES = 1024;
+// Quiet time after the last output before a turn is considered finished. Longer
+// than a typical mid-turn pause (tool run / thinking), so we alert once at the
+// end instead of on every pause.
+const NOTIFY_QUIET_MS = 2500;
 
 // Look up the session's PR from its transcript (claude records one when it runs
 // a PR git op). Refreshed when a turn ends, so a just-opened PR shows up soon.
@@ -1396,29 +1400,51 @@ function refreshSessionPr(s) {
 }
 
 function markWorking(s, len = 0) {
+  const now = Date.now();
   if (!s.working) {
     s.working = true;
-    s.attention = false;
-    s.workStart = Date.now();
-    s.workBytes = 0;
+    s.attention = false; // it's active again — clear any prior dot
     refreshBadge(s);
   }
-  s.workBytes = (s.workBytes || 0) + len;
+  // Accumulate over the whole turn so mid-turn pauses (tools/thinking) count as
+  // one episode. turnStart/turnBytes reset only when a turn finalizes.
+  if (!s.turnStart) {
+    s.turnStart = now;
+    s.turnBytes = 0;
+  }
+  s.turnBytes += len;
+
+  // Responsive "working" indicator: drops shortly after output stops.
   clearTimeout(s.workTimer);
   s.workTimer = setTimeout(() => {
     s.working = false;
-    const worked = Date.now() - (s.workStart || Date.now());
-    const substantial =
-      worked >= WORK_ATTENTION_MS && (s.workBytes || 0) >= WORK_ATTENTION_BYTES;
-    if (substantial) {
-      if (s.id !== activeId) s.attention = true; // dot only for background
-      playBellSound(); // audible end-of-turn cue — same signal as the dot,
-      // independent of whether claude emits a terminal bell
-      notifyAttention(s); // notify for any session (guarded by unfocused)
-    }
     refreshBadge(s);
-    refreshSessionPr(s); // a PR may have just been opened this turn
   }, 900);
+
+  // Debounced alert: fires only after the session has been quiet for
+  // NOTIFY_QUIET_MS, so a turn that pauses for tools notifies once — at the end,
+  // not on each pause. Any new output resets the timer.
+  clearTimeout(s.turnTimer);
+  s.turnTimer = setTimeout(() => {
+    const worked = Date.now() - (s.turnStart || Date.now());
+    const substantial =
+      worked >= WORK_ATTENTION_MS && (s.turnBytes || 0) >= WORK_ATTENTION_BYTES;
+    s.turnStart = null; // turn ended
+    // A turn ending during reconnect/resume is replayed transcript, not real.
+    const warmup = s.warmup;
+    s.warmup = false;
+    if (substantial) {
+      if (s.id !== activeId) s.attention = true;
+      // Alert once per episode; cleared when the session is viewed.
+      if (!s.alerted) {
+        s.alerted = true;
+        if (!warmup) playBellSound();
+        notifyAttention(s); // guarded by unfocused
+      }
+      refreshBadge(s);
+    }
+    refreshSessionPr(s); // a PR may have just been opened this turn
+  }, NOTIFY_QUIET_MS);
 }
 
 // xterm has no audible bell — it only fires onBell. We play through Web Audio,
@@ -1518,10 +1544,17 @@ function playBellSound() {
 // Terminal bell — claude rings it when a turn finishes / it needs input.
 function onBell(s) {
   clearTimeout(s.workTimer);
+  clearTimeout(s.turnTimer); // claude's bell is the precise end — cancel the debounce
   s.working = false;
+  s.turnStart = null;
+  const warmup = s.warmup;
+  s.warmup = false;
   if (s.id !== activeId) s.attention = true;
-  playBellSound();
-  notifyAttention(s);
+  if (!warmup && !s.alerted) {
+    s.alerted = true;
+    playBellSound(); // swallow a bell rung during reconnect/resume replay, and
+    notifyAttention(s); // only alert once per episode
+  }
   refreshBadge(s);
   refreshSessionPr(s);
 }
@@ -1566,8 +1599,10 @@ async function spawnSession(s) {
     args.worktree = s.wantWorktree;
     args.model = s.wantModel || null;
     args.remoteControl = !!s.wantRemote; // only a fresh session can register remote control
+    s.warmup = false; // a fresh session's first turn is real — ring for it
   } else {
     args.resume = s.id;
+    s.warmup = true; // resuming replays the transcript; don't ring for that burst
     // NB: --remote-control + --resume makes the CLI try to reattach to a dead
     // registration and fail ("Couldn't reconnect… start a fresh session without
     // --resume"); enable it in-session via /remote-control instead.
@@ -1586,7 +1621,10 @@ async function spawnSession(s) {
 function setActive(id) {
   const s = sessions.get(id);
   activeId = id;
-  if (s) s.attention = false; // viewing it clears any attention flag
+  if (s) {
+    s.attention = false; // viewing it clears any attention flag
+    s.alerted = false; // and re-arms the once-per-episode sound/notification
+  }
   // Materialize a cold session (restored across restart) on first activation.
   if (s && !s.term && !s.exited) attachTerminal(s);
   for (const [sid, x] of sessions) {
@@ -1766,6 +1804,7 @@ async function restore() {
     if (s.live && !s.term) {
       attachTerminal(s);
       s.needsRepaint = true;
+      s.warmup = true; // the reconnect repaint burst isn't a real turn — no bell
     }
   }
   renderSessionList();
