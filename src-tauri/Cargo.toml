@@ -1,6 +1,6 @@
 [package]
 name = "mandor"
-version = "0.1.1"
+version = "0.2.0"
 description = "A fast, light desktop GUI for managing interactive claude terminal sessions"
 authors = ["otezz"]
 edition = "2021"
