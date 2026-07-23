@@ -18,23 +18,24 @@
   box-sizing: border-box;
 }
 
-/* Style scrollbars so WebKitGTK renders them inline (respecting paint order)
-   rather than as an overlay layer that draws on top of positioned elements —
-   the sidebar's overlay scrollbar was painting over the right-click menu. */
-::-webkit-scrollbar {
+/* Style the sidebar list's scrollbar so WebKitGTK renders it inline (respecting
+   paint order) rather than as an overlay layer that draws on top of positioned
+   elements — its overlay scrollbar was painting over the right-click menu.
+   Scoped to the sidebar only: a global rule also restyled the terminal's scroll
+   area into an always-visible bar, showing as stray lines above/below the view. */
+#session-list::-webkit-scrollbar {
   width: 10px;
-  height: 10px;
 }
-::-webkit-scrollbar-track {
+#session-list::-webkit-scrollbar-track {
   background: transparent;
 }
-::-webkit-scrollbar-thumb {
+#session-list::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 6px;
   border: 2px solid transparent;
   background-clip: padding-box;
 }
-::-webkit-scrollbar-thumb:hover {
+#session-list::-webkit-scrollbar-thumb:hover {
   background: var(--fg-dim);
 }
 
