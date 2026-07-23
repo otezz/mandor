@@ -16,8 +16,8 @@ use tauri::{
 };
 
 use pty::{
-    close_pty, open_pty, resize_pty, running_ptys, set_claude_path, sweep_incognito_dirs,
-    write_pty, PtyState,
+    close_pty, create_profile, delete_profile, open_pty, resize_pty, running_ptys, set_claude_path,
+    sweep_incognito_dirs, write_pty, PtyState,
 };
 use tauri_plugin_window_state::{AppHandleExt, StateFlags};
 
@@ -296,6 +296,27 @@ fn open_session_window(app: tauri::AppHandle, id: String, name: String) -> Resul
     Ok(())
 }
 
+/// Open (or focus) a full sidebar window bound to a profile. The window loads the
+/// same UI parameterized by `?profile=<id>`, so its sessions run under that
+/// profile's config dir and it keeps its own (per-profile) session list.
+#[tauri::command]
+fn open_profile_window(app: tauri::AppHandle, id: String, name: String) -> Result<(), String> {
+    let label = format!("profile-{id}");
+    if let Some(w) = app.get_webview_window(&label) {
+        let _ = w.set_focus();
+        return Ok(());
+    }
+    let url = format!("index.html?profile={id}");
+    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
+        .title(name)
+        .inner_size(1100.0, 760.0)
+        .min_inner_size(600.0, 400.0)
+        .decorations(false) // same custom titlebar as the main window
+        .build()
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Reveal and focus the main window (from the tray or a second-instance launch).
 fn show_main(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -417,6 +438,9 @@ fn main() {
             read_audio_data,
             session_pr,
             open_session_window,
+            open_profile_window,
+            create_profile,
+            delete_profile,
             open_pty,
             write_pty,
             resize_pty,

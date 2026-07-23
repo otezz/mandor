@@ -24,6 +24,9 @@ struct PtySession {
     child: Box<dyn Child + Send + Sync>,
     // For incognito sessions: a throwaway CLAUDE_CONFIG_DIR to delete on teardown.
     incognito_dir: Option<PathBuf>,
+    // The window/profile that owns this session (None = default window). Lets each
+    // window reconnect only to its own PTYs on reload.
+    profile_id: Option<String>,
 }
 
 /// Build a throwaway `CLAUDE_CONFIG_DIR` for an incognito session: auth/settings/
@@ -43,6 +46,87 @@ fn incognito_base() -> Option<PathBuf> {
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")));
     cache.map(|c| c.join("mandor").join("incognito"))
+}
+
+/// Where persistent per-profile config dirs live. Unlike incognito this is DURABLE
+/// (the data dir, not the cache dir) and is NEVER swept — a profile keeps its own
+/// login, settings, MCP servers, and session history across restarts.
+fn profiles_base() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    let data = std::env::var_os("HOME")
+        .map(|h| PathBuf::from(h).join("Library").join("Application Support"));
+    #[cfg(not(target_os = "macos"))]
+    let data = std::env::var_os("XDG_DATA_HOME")
+        .map(PathBuf::from)
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share"))
+        });
+    data.map(|d| d.join("mandor").join("profiles"))
+}
+
+/// A single profile's config dir, `profiles_base/<id>`. `id` is a UUID from the
+/// frontend; reject anything path-like as a traversal guard.
+pub fn profile_dir(id: &str) -> Option<PathBuf> {
+    if id.is_empty() || id.contains('/') || id.contains('\\') || id.contains("..") {
+        return None;
+    }
+    profiles_base().map(|b| b.join(id))
+}
+
+/// The real default Claude config dir to seed a new profile from (`$CLAUDE_CONFIG_DIR`
+/// if Mandor was launched with one, else `~/.claude`).
+fn default_config_dir() -> Option<PathBuf> {
+    std::env::var_os("CLAUDE_CONFIG_DIR")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".claude")))
+}
+
+/// Create a persistent profile config dir, seeding it from the default config so
+/// it isn't a blank setup. Everything is COPIED (not symlinked) so the profile is
+/// independent and never writes back to `~/.claude`. Credentials are copied only
+/// when `copy_login`; otherwise the profile starts logged-out and the user runs
+/// `/login` with a different account. Idempotent (won't overwrite existing files).
+#[tauri::command]
+pub fn create_profile(id: String, copy_login: bool) -> Result<(), String> {
+    let dir = profile_dir(&id).ok_or("invalid profile id")?;
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    let Some(real) = default_config_dir() else {
+        return Ok(()); // nothing to seed from; leave the empty dir
+    };
+    let mut files = vec![
+        "settings.json",
+        "settings.local.json",
+        ".claude.json",
+        "CLAUDE.md",
+    ];
+    if copy_login {
+        files.push(".credentials.json");
+    }
+    for f in files {
+        let (src, dst) = (real.join(f), dir.join(f));
+        if src.exists() && !dst.exists() {
+            let _ = std::fs::copy(&src, &dst);
+        }
+    }
+    for d in ["commands", "agents", "skills", "plugins"] {
+        let (src, dst) = (real.join(d), dir.join(d));
+        if src.is_dir() && !dst.exists() {
+            let _ = copy_dir_all(&src, &dst);
+        }
+    }
+    Ok(())
+}
+
+/// Delete a profile's config dir and everything in it (symlink-safe, so it never
+/// follows a link out to the real config).
+#[tauri::command]
+pub fn delete_profile(id: String) -> Result<(), String> {
+    if let Some(dir) = profile_dir(&id) {
+        if dir.exists() {
+            remove_incognito_dir(&dir);
+        }
+    }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -207,10 +291,30 @@ struct PtyExit {
 }
 
 #[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RunningPty {
     id: String,
     cwd: String,
     incognito: bool,
+    profile_id: Option<String>,
+}
+
+/// Kebab-case a display name into a valid worktree segment: lowercase, runs of
+/// non-alphanumerics collapsed to single dashes, no leading/trailing dash.
+/// "Remove Auth0" -> "remove-auth0".
+fn slugify(name: &str) -> String {
+    let mut out = String::new();
+    for c in name.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('-') && !out.is_empty() {
+            out.push('-');
+        }
+    }
+    while out.ends_with('-') {
+        out.pop();
+    }
+    out
 }
 
 /// Spawn interactive `claude` in a PTY under `cwd` and start streaming its output.
@@ -246,6 +350,7 @@ pub fn open_pty(
     model: Option<String>,
     remote_control: bool,
     incognito: bool,
+    profile_id: Option<String>,
 ) -> Result<(), String> {
     let pair = native_pty_system()
         .openpty(PtySize {
@@ -280,7 +385,10 @@ pub fn open_pty(
     // works on resume too (unlike --remote-control).
     cmd.arg("--settings");
     cmd.arg(r#"{"preferredNotifChannel":"terminal_bell"}"#);
-    // Incognito: run against a throwaway config dir so nothing lands in ~/.claude.
+    // Config dir precedence: incognito (throwaway, deleted on close) wins; else a
+    // persistent profile dir if this window is bound to one; else the default
+    // (~/.claude, no override). Only the incognito dir is tracked for teardown —
+    // a profile dir is durable and must never be deleted here.
     let incognito_dir = if incognito {
         let dir = setup_incognito_config_dir(&id);
         if let Some(ref dir) = dir {
@@ -288,6 +396,13 @@ pub fn open_pty(
         }
         dir
     } else {
+        if let Some(dir) = profile_id
+            .as_deref()
+            .filter(|p| !p.is_empty())
+            .and_then(profile_dir)
+        {
+            cmd.env("CLAUDE_CONFIG_DIR", &dir);
+        }
         None
     };
     if resume.is_none() {
@@ -298,8 +413,11 @@ pub fn open_pty(
     }
     if worktree {
         cmd.arg("-w");
-        if let Some(wt_name) = &name {
-            cmd.arg(wt_name);
+        // claude requires a worktree name of only letters/digits/dots/underscores/
+        // dashes, but the display name can have spaces/caps/punctuation — so pass a
+        // kebab-cased slug. If it slugs to empty, drop the arg and let claude name it.
+        if let Some(slug) = name.as_deref().map(slugify).filter(|s| !s.is_empty()) {
+            cmd.arg(slug);
         }
     }
     if let Some(m) = model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
@@ -396,6 +514,7 @@ pub fn open_pty(
             writer,
             child,
             incognito_dir,
+            profile_id: profile_id.filter(|p| !p.is_empty()),
         },
     );
     Ok(())
@@ -460,8 +579,24 @@ pub fn running_ptys(state: State<PtyState>) -> Vec<RunningPty> {
                     id: id.clone(),
                     cwd: session.cwd.clone(),
                     incognito: session.incognito_dir.is_some(),
+                    profile_id: session.profile_id.clone(),
                 })
                 .collect()
         })
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::slugify;
+
+    #[test]
+    fn slugify_kebab_cases() {
+        assert_eq!(slugify("Remove Auth0"), "remove-auth0");
+        assert_eq!(slugify("  fix: the/bug  "), "fix-the-bug");
+        assert_eq!(slugify("v1.2.3"), "v1-2-3");
+        assert_eq!(slugify("already-kebab"), "already-kebab");
+        assert_eq!(slugify("!!!"), "");
+        assert_eq!(slugify(""), "");
+    }
 }

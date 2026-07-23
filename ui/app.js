@@ -8,6 +8,13 @@ const POPOUT = new URLSearchParams(location.search).get("popout") === "1";
 const POPOUT_ID = new URLSearchParams(location.search).get("id");
 if (POPOUT) document.body.classList.add("popout");
 
+// A profile window (?profile=<id>) is a full sidebar bound to one Claude profile:
+// its sessions run under that profile's CLAUDE_CONFIG_DIR (own login, settings,
+// history) and it keeps its own per-profile session list. null = the default
+// window (real ~/.claude).
+const PROFILE_ID = new URLSearchParams(location.search).get("profile") || null;
+if (PROFILE_ID) document.body.classList.add("profile-window");
+
 // id -> session record. id === the claude session id (forced via --session-id),
 // so a session can be resumed after a full app restart.
 // record: { id, cwd, name, groupId, spawnMode, wantWorktree, live, exited,
@@ -66,10 +73,18 @@ function baseName(cwd) {
   return parts[parts.length - 1] || cwd;
 }
 
-// Centered titlebar text: app name, plus the active session when there is one.
+// The window's app label: "Mandor" for the default window, the profile name for
+// a profile window (so multiple windows are distinguishable).
+function appLabel() {
+  if (!PROFILE_ID) return "Mandor";
+  const p = profiles.find((x) => x.id === PROFILE_ID);
+  return p ? `Mandor · ${p.name}` : "Mandor";
+}
+
+// Centered titlebar text: app label, plus the active session when there is one.
 function updateTitle() {
   const s = sessions.get(activeId);
-  titleEl.textContent = s ? `Mandor — ${s.name}` : "Mandor";
+  titleEl.textContent = s ? `${appLabel()} — ${s.name}` : appLabel();
 }
 
 // --- theming: data-driven registry (chrome vars + full 16-color terminal
@@ -412,8 +427,31 @@ function parseGhosttyTheme(text) {
 
 // --- persistence (localStorage; PTY liveness is the backend's source of truth) ---
 // Kept as-is across the mandor-term→Mandor rename so migrated localStorage
-// (sessions, groups, settings) is still found under this key.
-const STORE_KEY = "mandor-term.sidebar";
+// (sessions, groups, settings) is still found under this key. Profile windows
+// persist their own session list under a per-profile suffix; the default window
+// keeps the bare key.
+const STORE_KEY_BASE = "mandor-term.sidebar";
+const STORE_KEY = STORE_KEY_BASE + (PROFILE_ID ? "." + PROFILE_ID : "");
+
+// Global profile registry (shared across all windows): [{ id, name }]. Each entry
+// maps to a persistent config dir the backend owns (profiles_base/<id>).
+const PROFILES_KEY = "mandor-term.profiles";
+let profiles = [];
+function loadProfiles() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PROFILES_KEY) || "[]");
+    profiles = Array.isArray(raw) ? raw : [];
+  } catch {
+    profiles = [];
+  }
+}
+function saveProfiles() {
+  try {
+    localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles));
+  } catch (e) {
+    console.error(e);
+  }
+}
 
 function persist() {
   if (POPOUT) return; // the main window owns persistence
@@ -471,6 +509,7 @@ function loadStore() {
     if (!getTheme(settings.theme)) settings.theme = "frappe";
     savedSessions = Array.isArray(data.sessions) ? data.sessions : [];
     savedActiveId = data.activeId ?? null;
+    loadProfiles();
   } catch (e) {
     console.error(e);
   }
@@ -1393,7 +1432,7 @@ const BELL_WARMUP_MS = 8000;
 // a PR git op). Refreshed when a turn ends, so a just-opened PR shows up soon.
 function refreshSessionPr(s) {
   if (!s || s.incognito) return; // incognito transcripts aren't in the shared store
-  invoke("session_pr", { id: s.id, cwd: s.cwd })
+  invoke("session_pr", { id: s.id, cwd: s.cwd, profileId: PROFILE_ID })
     .then((pr) => {
       if (JSON.stringify(pr ?? null) === JSON.stringify(s.pr ?? null)) return;
       s.pr = pr || null;
@@ -1461,6 +1500,7 @@ function markWorking(s, len = 0) {
 // unavailable.
 let bellAudioCtx = null;
 let bellBuffer = null; // decoded AudioBuffer of the current bell sound
+let bellBytes = null; // raw encoded bytes; decoded once a gesture-created ctx exists
 
 function ensureAudioCtx() {
   if (!bellAudioCtx) {
@@ -1470,11 +1510,26 @@ function ensureAudioCtx() {
   return bellAudioCtx;
 }
 
-// WebKit keeps the AudioContext "suspended" until a user gesture. Resume it on
-// the first interaction so later event-driven bells can play without one.
+async function decodeBell() {
+  if (!bellAudioCtx || bellBuffer || !bellBytes) return;
+  try {
+    // decodeAudioData detaches its input, so decode a copy and keep bellBytes.
+    bellBuffer = await bellAudioCtx.decodeAudioData(bellBytes.slice(0));
+  } catch {
+    bellBuffer = null; // undecodable → synth beep fallback
+  }
+}
+
+// WebKit only lets an AudioContext output sound if it was CREATED under a user
+// gesture — a context built at page load (no gesture) stays silent in secondary
+// windows even after resume(). So we create it lazily HERE, on the first real
+// interaction, then resume it and decode the sound. (This is why a fresh profile
+// window was fully silent: its context had been built during startup.)
 function unlockAudio() {
-  const ctx = ensureAudioCtx();
-  if (ctx && ctx.state === "suspended") ctx.resume().catch(() => {});
+  const ctx = ensureAudioCtx(); // born inside this gesture
+  if (!ctx) return;
+  if (ctx.state === "suspended") ctx.resume().catch(() => {});
+  decodeBell();
 }
 for (const ev of ["pointerdown", "keydown"])
   window.addEventListener(ev, unlockAudio, { capture: true, passive: true });
@@ -1486,24 +1541,23 @@ function b64ToArrayBuffer(b64) {
   return bytes.buffer;
 }
 
-// Decode the bell sound (a custom file via the backend, else the bundled
-// default) into an AudioBuffer. Called on load and whenever the setting changes.
+// Fetch the bell sound's raw bytes (a custom file via the backend, else the
+// bundled default). Decoding is deferred to decodeBell() so the AudioContext is
+// only ever created under a user gesture (see unlockAudio).
 async function loadBellSound() {
   bellBuffer = null;
-  const ctx = ensureAudioCtx();
-  if (!ctx) return;
+  bellBytes = null;
   try {
-    let arr;
     const path = settings.bellSoundFile;
     if (path) {
-      arr = b64ToArrayBuffer(await invoke("read_audio_data", { path }));
+      bellBytes = b64ToArrayBuffer(await invoke("read_audio_data", { path }));
     } else {
-      arr = await (await fetch("notification.mp3")).arrayBuffer();
+      bellBytes = await (await fetch("notification.mp3")).arrayBuffer();
     }
-    bellBuffer = await ctx.decodeAudioData(arr);
   } catch {
-    bellBuffer = null; // undecodable → synth beep fallback
+    bellBytes = null;
   }
+  decodeBell(); // decode now if a ctx already exists (e.g. after a settings change)
 }
 
 function synthBeep() {
@@ -1532,12 +1586,21 @@ function playBellSound() {
   const ctx = ensureAudioCtx();
   if (!ctx) return;
   if (ctx.state === "suspended") ctx.resume().catch(() => {});
+  if (!bellBuffer) decodeBell(); // not ready yet — kick a decode for next time
   if (bellBuffer) {
     try {
+      const t = ctx.currentTime;
+      const dur = bellBuffer.duration || 0.3;
       const src = ctx.createBufferSource();
       src.buffer = bellBuffer;
-      src.connect(ctx.destination);
-      src.start();
+      // Play through a gain node with a hair of headroom and a short tail fade,
+      // so the buffer doesn't end abruptly and click.
+      const gain = ctx.createGain();
+      gain.gain.setValueAtTime(0.9, t);
+      gain.gain.setValueAtTime(0.9, t + Math.max(0, dur - 0.03));
+      gain.gain.linearRampToValueAtTime(0.0001, t + dur);
+      src.connect(gain).connect(ctx.destination);
+      src.start(t);
       return;
     } catch {
       /* fall through to synth beep */
@@ -1599,6 +1662,7 @@ async function spawnSession(s) {
     model: null,
     remoteControl: false,
     incognito: !!s.incognito,
+    profileId: PROFILE_ID, // this window's profile (null = default ~/.claude)
   };
   if (s.spawnMode === "new") {
     args.sessionId = s.id;
@@ -1784,6 +1848,9 @@ async function restore() {
   } catch (e) {
     console.error(e);
   }
+  // Each window owns its own sessions; running_ptys is global across windows, so
+  // reconnect only to PTYs belonging to this window's profile.
+  running = running.filter((r) => (r.profileId ?? null) === PROFILE_ID);
   const liveIds = new Set(running.map((r) => r.id));
 
   for (const rec of savedSessions) {
@@ -1826,6 +1893,7 @@ async function restore() {
     sessionOrder.find((id) => sessions.get(id)?.live) ??
     sessionOrder.find((id) => sessions.has(id));
   if (first) setActive(first);
+  else updateTitle(); // no session yet — still show the app/profile name
   if (settings.resumeOnStart) resumeAllOnStart();
 }
 
@@ -2180,7 +2248,7 @@ function openNewSession(presetGroupId = null) {
   nsSessionsLoaded = false;
   nsExistingFilter.value = "";
   renderNsExisting();
-  invoke("list_sessions")
+  invoke("list_sessions", { profileId: PROFILE_ID })
     .then((items) => {
       nsSessions = items;
     })
@@ -2305,7 +2373,7 @@ async function openResume() {
   resumeEmpty.textContent = "Loading…";
   resumeFilter.value = "";
   try {
-    resumeItems = await invoke("list_sessions");
+    resumeItems = await invoke("list_sessions", { profileId: PROFILE_ID });
   } catch (e) {
     console.error(e);
     resumeItems = [];
@@ -2408,9 +2476,9 @@ winMax.addEventListener("click", () =>
   invoke("toggle_maximize").then(syncMaxIcon),
 );
 document.getElementById("win-close").addEventListener("click", () => {
-  // Pop-out: close just this window (the session keeps running in the main
-  // window). Main window: hide to tray so sessions keep running.
-  if (POPOUT) appWindow.close();
+  // Pop-out / profile window: close just this window (its PTYs keep running in
+  // the backend and reconnect when reopened). Main window: hide to tray.
+  if (POPOUT || PROFILE_ID) appWindow.close();
   else invoke("hide_to_tray");
 });
 
@@ -2935,6 +3003,107 @@ function renderSettingsGroups() {
   }
 }
 
+function renderSettingsProfiles() {
+  const box = document.getElementById("set-profiles");
+  box.replaceChildren();
+  if (!profiles.length) {
+    box.appendChild(
+      Object.assign(document.createElement("div"), {
+        className: "set-hint",
+        textContent: "No profiles yet.",
+      }),
+    );
+    return;
+  }
+  for (const p of profiles) {
+    const row = document.createElement("div");
+    row.className = "set-group-row";
+    const name = document.createElement("input");
+    name.className = "set-group-name-input";
+    name.value = p.name;
+    name.spellcheck = false;
+    name.addEventListener("change", () => {
+      const v = name.value.trim();
+      if (v) {
+        p.name = v;
+        saveProfiles();
+      } else {
+        name.value = p.name;
+      }
+    });
+    row.append(
+      name,
+      ghostBtn("Open window", () =>
+        invoke("open_profile_window", { id: p.id, name: p.name }).catch(
+          () => {},
+        ),
+      ),
+    );
+    // Delete is destructive (removes the profile's login + all its history), so
+    // require a second click to confirm.
+    let armed = false;
+    const del = ghostBtn("Delete", () => {
+      if (!armed) {
+        armed = true;
+        del.textContent = "Delete — sure?";
+        setTimeout(() => {
+          armed = false;
+          del.textContent = "Delete";
+        }, 3000);
+        return;
+      }
+      deleteProfile(p.id);
+      renderSettingsProfiles();
+    });
+    row.append(del);
+    box.appendChild(row);
+  }
+}
+
+function deleteProfile(id) {
+  profiles = profiles.filter((p) => p.id !== id);
+  saveProfiles();
+  invoke("delete_profile", { id }).catch(() => {}); // remove the on-disk config dir
+  try {
+    localStorage.removeItem(STORE_KEY_BASE + "." + id); // its per-profile session list
+  } catch {}
+}
+
+function clearProfileForm() {
+  document.getElementById("set-profile-name").value = "";
+  document.getElementById("set-profile-copylogin").checked = false;
+  const err = document.getElementById("set-profile-err");
+  err.hidden = true;
+  err.textContent = "";
+}
+
+async function createProfileFromForm() {
+  const nameEl = document.getElementById("set-profile-name");
+  const errEl = document.getElementById("set-profile-err");
+  const name = nameEl.value.trim();
+  if (!name) {
+    errEl.textContent = "Give the profile a name.";
+    errEl.hidden = false;
+    nameEl.focus();
+    return;
+  }
+  const copyLogin = document.getElementById("set-profile-copylogin").checked;
+  const id = crypto.randomUUID();
+  try {
+    await invoke("create_profile", { id, copyLogin });
+  } catch (e) {
+    errEl.textContent = String(e);
+    errEl.hidden = false;
+    return;
+  }
+  profiles.push({ id, name });
+  saveProfiles();
+  document.getElementById("set-profile-form").hidden = true;
+  clearProfileForm();
+  renderSettingsProfiles();
+  invoke("open_profile_window", { id, name }).catch(() => {}); // open it right away
+}
+
 function openSettings() {
   setThemeLabel.textContent = themeLabel(settings.theme);
   setThemeMenu.hidden = true;
@@ -2960,6 +3129,9 @@ function openSettings() {
     !!settings.remoteByDefault;
   setDefCwdLabelText();
   renderSettingsGroups();
+  renderSettingsProfiles();
+  document.getElementById("set-profile-form").hidden = true;
+  clearProfileForm();
   renderCustomThemes();
   document.getElementById("set-theme-form").hidden = true;
   clearThemeForm();
@@ -2990,6 +3162,19 @@ document.getElementById("set-add-group").addEventListener("click", () => {
     last.select();
   }
 });
+
+document.getElementById("set-add-profile").addEventListener("click", () => {
+  const f = document.getElementById("set-profile-form");
+  f.hidden = !f.hidden;
+  if (!f.hidden) document.getElementById("set-profile-name").focus();
+});
+document.getElementById("set-profile-cancel").addEventListener("click", () => {
+  document.getElementById("set-profile-form").hidden = true;
+  clearProfileForm();
+});
+document
+  .getElementById("set-profile-create")
+  .addEventListener("click", createProfileFromForm);
 
 document.getElementById("set-theme-btn").addEventListener("click", (e) => {
   e.stopPropagation();

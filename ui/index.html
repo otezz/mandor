@@ -381,6 +381,9 @@
           <button class="settings-tab" type="button" data-section="groups">
             Groups
           </button>
+          <button class="settings-tab" type="button" data-section="profiles">
+            Profiles
+          </button>
           <button class="settings-tab" type="button" data-section="advanced">
             Advanced
           </button>
@@ -558,6 +561,50 @@
             <button id="set-add-group" class="set-ghost" type="button">
               + New group
             </button>
+          </section>
+
+          <section class="settings-section" data-section="profiles" hidden>
+            <div class="set-hint">
+              Each profile is a separate Claude login and config in its own
+              window — run a work and a personal subscription side by side.
+              Sessions and history stay isolated; nothing is written to your
+              default
+              <code>~/.claude</code>.
+            </div>
+            <div id="set-profiles" class="set-groups"></div>
+            <button id="set-add-profile" class="set-ghost" type="button">
+              + New profile
+            </button>
+            <div id="set-profile-form" class="set-theme-form" hidden>
+              <input
+                id="set-profile-name"
+                class="ns-input"
+                type="text"
+                spellcheck="false"
+                placeholder="Profile name (e.g. Personal)"
+              />
+              <label class="set-check">
+                <input id="set-profile-copylogin" type="checkbox" />
+                <span
+                  >Copy my current login (same account, separate history). Leave
+                  off to start logged-out and sign in with a different
+                  account.</span
+                >
+              </label>
+              <div id="set-profile-err" class="set-theme-err" hidden></div>
+              <div class="set-theme-actions">
+                <button id="set-profile-cancel" class="set-ghost" type="button">
+                  Cancel
+                </button>
+                <button
+                  id="set-profile-create"
+                  class="set-ghost set-theme-save"
+                  type="button"
+                >
+                  Create &amp; open
+                </button>
+              </div>
+            </div>
           </section>
 
           <section class="settings-section" data-section="advanced" hidden>

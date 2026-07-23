@@ -1,11 +1,12 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window and session pop-out windows",
-  "windows": ["main", "popout-*"],
+  "description": "Capability for the main window, session pop-out windows, and profile windows",
+  "windows": ["main", "popout-*", "profile-*"],
   "permissions": [
     "core:default",
     "core:window:allow-start-dragging",
+    "core:window:allow-close",
     "dialog:default",
     "notification:default",
     "autostart:default"

@@ -50,19 +50,28 @@ struct Head {
 /// (`~/.claude/projects/**/*.jsonl`), newest first. Blocking fs work runs off
 /// the main thread.
 #[tauri::command]
-pub async fn list_sessions() -> Result<Vec<SessionInfo>, String> {
-    tauri::async_runtime::spawn_blocking(scan_sessions)
+pub async fn list_sessions(profile_id: Option<String>) -> Result<Vec<SessionInfo>, String> {
+    tauri::async_runtime::spawn_blocking(move || scan_sessions(profile_id.as_deref()))
         .await
         .map_err(|e| e.to_string())
 }
 
-fn projects_dir() -> Option<PathBuf> {
+/// The transcript store for a profile (`<profile dir>/projects`) or the default
+/// (`~/.claude/projects`). Claude writes `projects/` under `$CLAUDE_CONFIG_DIR`,
+/// so a profile's sessions live under its own dir — mirror that here.
+fn projects_dir(profile_id: Option<&str>) -> Option<PathBuf> {
+    if let Some(dir) = profile_id
+        .filter(|p| !p.is_empty())
+        .and_then(crate::pty::profile_dir)
+    {
+        return Some(dir.join("projects"));
+    }
     let home = std::env::var_os("HOME")?;
     Some(PathBuf::from(home).join(".claude").join("projects"))
 }
 
-fn scan_sessions() -> Vec<SessionInfo> {
-    let Some(projects) = projects_dir() else {
+fn scan_sessions(profile_id: Option<&str>) -> Vec<SessionInfo> {
+    let Some(projects) = projects_dir(profile_id) else {
         return Vec::new();
     };
 
@@ -114,20 +123,28 @@ fn scan_sessions() -> Vec<SessionInfo> {
 
 /// The transcript path for a session id running in `cwd` (project dir = the cwd
 /// with '/' and '.' turned into '-', matching Claude's on-disk layout).
-fn transcript_path(cwd: &str, id: &str) -> Option<PathBuf> {
+fn transcript_path(cwd: &str, id: &str, profile_id: Option<&str>) -> Option<PathBuf> {
     let enc: String = cwd
         .chars()
         .map(|c| if c == '/' || c == '.' { '-' } else { c })
         .collect();
-    Some(projects_dir()?.join(enc).join(format!("{id}.jsonl")))
+    Some(
+        projects_dir(profile_id)?
+            .join(enc)
+            .join(format!("{id}.jsonl")),
+    )
 }
 
 /// The PR (if any) claude opened/updated in a specific session — used to refresh
 /// a live session's PR badge without re-scanning every transcript.
 #[tauri::command]
-pub async fn session_pr(id: String, cwd: String) -> Result<Option<PrInfo>, String> {
+pub async fn session_pr(
+    id: String,
+    cwd: String,
+    profile_id: Option<String>,
+) -> Result<Option<PrInfo>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        transcript_path(&cwd, &id)
+        transcript_path(&cwd, &id, profile_id.as_deref())
             .as_deref()
             .and_then(transcript_head)
             .and_then(|h| h.pr)
