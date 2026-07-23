@@ -2018,7 +2018,7 @@ dependencies = [
 
 [[package]]
 name = "mandor"
-version = "0.2.0"
+version = "0.3.0"
 dependencies = [
  "base64 0.22.1",
  "fontdb",
