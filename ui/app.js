@@ -458,7 +458,7 @@ function persist() {
   const sess = sessionOrder
     .map((id) => sessions.get(id))
     .filter(Boolean)
-    .filter((s) => !s.incognito) // never persist incognito sessions to disk
+    .filter((s) => !s.incognito && !s.agents) // incognito + agents-manager are ephemeral
     .map((s) => ({
       id: s.id,
       cwd: s.cwd,
@@ -1186,6 +1186,7 @@ function addSession(rec) {
     wantModel: rec.wantModel || "",
     wantRemote: !!rec.wantRemote,
     incognito: !!rec.incognito, // isolated config dir, nothing saved to disk
+    agents: !!rec.agents, // runs `claude agents` (background-agent manager), not a session
     pr: rec.pr || null, // { prNumber, prUrl } if claude opened a PR in it
     live: !!rec.live, // a PTY is running for this session
     exited: false,
@@ -1427,11 +1428,17 @@ const NOTIFY_QUIET_MS = 2500;
 // of output that isn't a real turn. Ignore alerts for this long afterward so
 // startup doesn't ring. A real turn needs user input, which won't happen this fast.
 const BELL_WARMUP_MS = 8000;
+// Global grace after this window loads: suppress the sound + desktop notification
+// (but not the dot) so reconnecting/replaying sessions on startup don't ring.
+// Covers cases the per-session warmup misses (staggered resumes, long replays).
+const STARTUP_GRACE_MS = 30000;
+const APP_START_MS = Date.now();
+const inStartupGrace = () => Date.now() - APP_START_MS < STARTUP_GRACE_MS;
 
 // Look up the session's PR from its transcript (claude records one when it runs
 // a PR git op). Refreshed when a turn ends, so a just-opened PR shows up soon.
 function refreshSessionPr(s) {
-  if (!s || s.incognito) return; // incognito transcripts aren't in the shared store
+  if (!s || s.incognito || s.agents) return; // no shared-store transcript for these
   invoke("session_pr", { id: s.id, cwd: s.cwd, profileId: PROFILE_ID })
     .then((pr) => {
       if (JSON.stringify(pr ?? null) === JSON.stringify(s.pr ?? null)) return;
@@ -1477,10 +1484,11 @@ function markWorking(s, len = 0) {
     // not a real turn — ignore it (no dot, sound, or notification, and don't
     // consume the once-per-episode alert, so the first real turn still rings).
     const warming = Date.now() < (s.warmUntil || 0);
-    if (substantial && !warming) {
+    if (substantial && !warming && !s.agents) {
       if (s.id !== activeId) s.attention = true;
-      if (!s.alerted) {
-        // once per episode; cleared when the session is viewed
+      // Alert once per episode; skip the sound/notification during the startup
+      // grace so reconnecting sessions don't ring (the dot above still updates).
+      if (!s.alerted && !inStartupGrace()) {
         s.alerted = true;
         playBellSound();
         notifyAttention(s); // guarded by unfocused
@@ -1615,15 +1623,15 @@ function onBell(s) {
   clearTimeout(s.turnTimer); // claude's bell is the precise end — cancel the debounce
   s.working = false;
   s.turnStart = null;
-  if (Date.now() < (s.warmUntil || 0)) {
-    refreshBadge(s); // ignore bells rung during reconnect/resume replay
+  if (s.agents || Date.now() < (s.warmUntil || 0)) {
+    refreshBadge(s); // ignore bells during replay warmup / the agents manager
     return;
   }
   if (s.id !== activeId) s.attention = true;
-  if (!s.alerted) {
+  if (!s.alerted && !inStartupGrace()) {
     s.alerted = true;
     playBellSound();
-    notifyAttention(s); // only alert once per episode
+    notifyAttention(s); // once per episode; silenced during the startup grace
   }
   refreshBadge(s);
   refreshSessionPr(s);
@@ -1663,8 +1671,12 @@ async function spawnSession(s) {
     remoteControl: false,
     incognito: !!s.incognito,
     profileId: PROFILE_ID, // this window's profile (null = default ~/.claude)
+    agents: !!s.agents, // runs `claude agents` instead of a session
   };
-  if (s.spawnMode === "new") {
+  if (s.agents) {
+    // Background-agent manager — no session id / resume; leave the session flags off.
+    s.warmUntil = Date.now() + BELL_WARMUP_MS; // its listing output isn't a real turn
+  } else if (s.spawnMode === "new") {
     args.sessionId = s.id;
     args.name = s.name;
     args.worktree = s.wantWorktree;
@@ -1678,7 +1690,7 @@ async function spawnSession(s) {
     // registration and fail ("Couldn't reconnect… start a fresh session without
     // --resume"); enable it in-session via /remote-control instead.
   }
-  s.spawnMode = "resume"; // any later respawn resumes
+  if (!s.agents) s.spawnMode = "resume"; // any later respawn resumes (agents re-runs agents)
   try {
     await invoke("open_pty", args);
   } catch (e) {
@@ -1773,6 +1785,34 @@ function startSession(cwd, opts = {}) {
   renderSessionList();
   persist();
   setActive(id); // attaches, sizes, and spawns
+}
+
+// Open claude's background-agent manager (`claude agents`) in this window's
+// profile so you can attach to a session that was backgrounded — plain --resume
+// can't reach a bg agent. Ephemeral: not persisted, spawns `claude agents`.
+function openAgents() {
+  const cwd =
+    sessions.get(activeId)?.cwd ||
+    settings.defaultCwd ||
+    sessionOrder.map((id) => sessions.get(id)?.cwd).find(Boolean) ||
+    recentDirs[0];
+  if (!cwd) {
+    alert(
+      "Open a session (or set a default directory in Settings) first — the agents view needs a folder to launch in.",
+    );
+    return;
+  }
+  const id = crypto.randomUUID();
+  addSession({
+    id,
+    cwd,
+    name: "Background agents",
+    spawnMode: "agents",
+    agents: true,
+    live: false,
+  });
+  renderSessionList();
+  setActive(id); // attaches + spawns `claude agents`
 }
 
 // Open a session in its own window. The main window then switches away from it
@@ -2433,9 +2473,54 @@ document.addEventListener("keydown", (e) => {
 const appMenu = document.getElementById("app-menu");
 const appMenuBtn = document.getElementById("app-menu-btn");
 
+// Populate the app menu's "Open profile" item as a fly-out submenu (same
+// mechanism as the right-click "Move to group"). Re-reads the global registry so
+// profiles created in another window show up too.
+function buildAppMenuProfiles() {
+  loadProfiles();
+  const box = document.getElementById("app-menu-profiles");
+  box.replaceChildren();
+
+  const parent = document.createElement("div");
+  parent.className = "context-parent";
+  const btn = document.createElement("button");
+  btn.type = "button";
+  btn.className = "context-parent-btn";
+  const lbl = document.createElement("span");
+  lbl.textContent = "Open profile";
+  const chev = document.createElement("span");
+  chev.className = "context-chevron";
+  chev.textContent = "▸";
+  btn.append(lbl, chev);
+
+  const sub = document.createElement("div");
+  sub.className = "context-submenu";
+  for (const p of profiles) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.dataset.openProfile = p.id;
+    b.textContent = p.name + (p.id === PROFILE_ID ? "  ✓" : "");
+    sub.appendChild(b);
+  }
+  const nb = document.createElement("button");
+  nb.type = "button";
+  nb.dataset.action = "new-profile";
+  nb.textContent = "New profile…";
+  sub.appendChild(nb);
+
+  parent.append(btn, sub);
+  box.appendChild(parent);
+  // Flip the submenu leftward when the menu sits near the right edge.
+  const r = box.getBoundingClientRect();
+  if (r.left + r.width + 180 > window.innerWidth)
+    sub.classList.add("submenu-left");
+}
+
 appMenuBtn.addEventListener("click", (e) => {
   e.stopPropagation();
+  const opening = appMenu.hidden;
   appMenu.hidden = !appMenu.hidden;
+  if (opening) buildAppMenuProfiles();
 });
 document.addEventListener("click", () => {
   appMenu.hidden = true;
@@ -2446,13 +2531,32 @@ document.addEventListener("click", () => {
   if (!POPOUT) attentionMenu.hidden = true;
 });
 appMenu.addEventListener("click", (e) => {
-  const action = e.target.closest("button")?.dataset.action;
+  const btn = e.target.closest("button");
+  if (!btn) return;
+  const openId = btn.dataset.openProfile;
+  if (openId) {
+    appMenu.hidden = true;
+    const p = profiles.find((x) => x.id === openId);
+    invoke("open_profile_window", {
+      id: openId,
+      name: p?.name || "Profile",
+    }).catch((err) => console.error(err));
+    return;
+  }
+  const action = btn.dataset.action;
   if (!action) return;
   appMenu.hidden = true;
   if (action === "new") openNewSession();
   else if (action === "resume") openResume();
+  else if (action === "agents") openAgents();
   else if (action === "group") createGroupAndRename();
-  else if (action === "settings") openSettings();
+  else if (action === "new-profile") {
+    openSettings();
+    showSettingsSection("profiles");
+    const f = document.getElementById("set-profile-form");
+    f.hidden = false;
+    document.getElementById("set-profile-name").focus();
+  } else if (action === "settings") openSettings();
   else if (action === "quit") invoke("quit_app");
 });
 

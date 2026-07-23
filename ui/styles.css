@@ -288,6 +288,14 @@ body.maximized .window {
   background: var(--border);
   margin: 4px 2px;
 }
+/* Fly-out parent button inside the app menu (Open profile) — flex so the chevron
+   sits at the right edge, like the right-click submenu parents. */
+#app-menu .context-parent-btn {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
 
 /* App body */
 #app {

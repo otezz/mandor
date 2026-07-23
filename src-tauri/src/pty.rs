@@ -351,6 +351,7 @@ pub fn open_pty(
     remote_control: bool,
     incognito: bool,
     profile_id: Option<String>,
+    agents: bool,
 ) -> Result<(), String> {
     let pair = native_pty_system()
         .openpty(PtySize {
@@ -379,6 +380,12 @@ pub fn open_pty(
     cmd.cwd(&cwd);
     // Inherited env carries our merged PATH; TERM isn't inherited on a GUI launch.
     cmd.env("TERM", "xterm-256color");
+    // `claude agents` opens the background-agent manager (to attach to a bg agent
+    // that plain --resume can't). It's a subcommand, so it must come first, and the
+    // per-session flags below don't apply to it.
+    if agents {
+        cmd.arg("agents");
+    }
     // Make claude ring the terminal bell on its notifications so our onBell hook
     // fires (attention indicator, desktop notification, bell sound). Scoped to
     // this session via --settings; the user's global config is untouched, and it
@@ -405,35 +412,38 @@ pub fn open_pty(
         }
         None
     };
-    if resume.is_none() {
-        if let Some(display_name) = &name {
-            cmd.arg("-n");
-            cmd.arg(display_name);
+    // Per-session flags — not applicable to the `claude agents` manager.
+    if !agents {
+        if resume.is_none() {
+            if let Some(display_name) = &name {
+                cmd.arg("-n");
+                cmd.arg(display_name);
+            }
         }
-    }
-    if worktree {
-        cmd.arg("-w");
-        // claude requires a worktree name of only letters/digits/dots/underscores/
-        // dashes, but the display name can have spaces/caps/punctuation — so pass a
-        // kebab-cased slug. If it slugs to empty, drop the arg and let claude name it.
-        if let Some(slug) = name.as_deref().map(slugify).filter(|s| !s.is_empty()) {
-            cmd.arg(slug);
+        if worktree {
+            cmd.arg("-w");
+            // claude requires a worktree name of only letters/digits/dots/underscores/
+            // dashes, but the display name can have spaces/caps/punctuation — so pass a
+            // kebab-cased slug. If it slugs to empty, drop the arg and let claude name it.
+            if let Some(slug) = name.as_deref().map(slugify).filter(|s| !s.is_empty()) {
+                cmd.arg(slug);
+            }
         }
-    }
-    if let Some(m) = model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
-        cmd.arg("--model");
-        cmd.arg(m);
-    }
-    if remote_control {
-        cmd.arg("--remote-control");
-    }
-    if let Some(sid) = &session_id {
-        cmd.arg("--session-id");
-        cmd.arg(sid);
-    }
-    if let Some(resume_id) = &resume {
-        cmd.arg("--resume");
-        cmd.arg(resume_id);
+        if let Some(m) = model.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+            cmd.arg("--model");
+            cmd.arg(m);
+        }
+        if remote_control {
+            cmd.arg("--remote-control");
+        }
+        if let Some(sid) = &session_id {
+            cmd.arg("--session-id");
+            cmd.arg(sid);
+        }
+        if let Some(resume_id) = &resume {
+            cmd.arg("--resume");
+            cmd.arg(resume_id);
+        }
     }
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
