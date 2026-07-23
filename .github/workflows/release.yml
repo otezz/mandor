@@ -66,7 +66,7 @@ jobs:
 
       - name: Save bundles as run artifacts (manual builds)
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: mandor-linux-bundles
           path: |
@@ -109,7 +109,7 @@ jobs:
 
       - name: Save .dmg as a run artifact (manual builds)
         if: github.event_name == 'workflow_dispatch'
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v7
         with:
           name: mandor-macos-dmg
           path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
