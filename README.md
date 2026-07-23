@@ -55,12 +55,23 @@ conversation — it hosts the genuine `claude` process and stays out of the way.
 
 ## Install
 
-[Download the latest `.deb`](https://github.com/otezz/mandor/releases/latest)
-(or build it yourself, below), then:
+Grab a build from the [latest release](https://github.com/otezz/mandor/releases/latest)
+(or build it yourself, below).
+
+**Linux** (x86_64):
 
 ```bash
-sudo dpkg -i Mandor_*_amd64.deb
+sudo dpkg -i Mandor_*_amd64.deb           # Debian / Ubuntu
+sudo dnf install ./Mandor-*.x86_64.rpm    # Fedora / RHEL
+chmod +x Mandor_*_amd64.AppImage && ./Mandor_*_amd64.AppImage   # any distro
 ```
+
+Arch / CachyOS: the AppImage works as-is.
+
+**macOS** (universal — Apple Silicon & Intel): open `Mandor_*_universal.dmg` and
+drag Mandor to Applications. The app is **not code-signed**, so on first launch
+right-click it → **Open** (or run `xattr -cr /Applications/Mandor.app`) to get
+past Gatekeeper.
 
 Mandor launches the `claude` CLI from your `PATH`, so make sure `claude` is
 installed and runnable from a terminal first.
@@ -107,3 +118,8 @@ Tauri v2 (Rust) · `portable-pty` for PTYs · vanilla JS/CSS frontend ·
   (re-encoded to mono for size).
 - Terminal rendering: [`xterm.js`](https://xtermjs.org/) (vendored in `ui/vendor/`).
 - Default terminal font: [JetBrains Mono](https://www.jetbrains.com/lp/mono/) (OFL).
+
+## License
+
+[GPL-3.0](LICENSE). Mandor is an independent project and is not affiliated with
+or endorsed by Anthropic.

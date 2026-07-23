@@ -812,36 +812,52 @@
           <h2>Install the build, or run it from source.</h2>
           <p>
             <a href="https://github.com/otezz/mandor/releases/latest"
-              >Download the latest <code>.deb</code></a
-            >, then install it with the command below. Linux is the primary
-            target today; Mandor launches <code>claude</code> from your
-            <code>PATH</code>, so make sure the CLI runs in a terminal first.
+              >Download the latest release</a
+            >
+            — Linux (<code>.deb</code>, <code>.rpm</code>, or AppImage) or a macOS
+            universal <code>.dmg</code>. Mandor launches <code>claude</code> from
+            your <code>PATH</code>, so make sure the CLI runs in a terminal first.
           </p>
         </div>
         <div class="install">
           <div class="code">
             <div class="head">
-              <span>Install the .deb</span>
+              <span>Install (Linux)</span>
               <button class="copy" data-copy="sudo dpkg -i Mandor_*_amd64.deb">
                 copy
               </button>
             </div>
-            <pre><span class="c"># after downloading the release</span>
-sudo dpkg -i Mandor_*_amd64.deb</pre>
+            <pre><span class="c"># Debian / Ubuntu</span>
+sudo dpkg -i Mandor_*_amd64.deb
+<span class="c"># Fedora / RHEL</span>
+sudo dnf install ./Mandor-*.x86_64.rpm
+<span class="c"># any distro (Arch/CachyOS included)</span>
+chmod +x Mandor_*.AppImage &amp;&amp; ./Mandor_*.AppImage</pre>
+          </div>
+          <div class="code">
+            <div class="head">
+              <span>macOS (unsigned)</span>
+              <button class="copy" data-copy="xattr -cr /Applications/Mandor.app">
+                copy
+              </button>
+            </div>
+            <pre><span class="c"># open the .dmg, drag to Applications, then on</span>
+<span class="c"># first launch right-click the app → Open, or:</span>
+xattr -cr /Applications/Mandor.app</pre>
           </div>
           <div class="code">
             <div class="head">
               <span>Build from source</span>
               <button
                 class="copy"
-                data-copy="bun install && bun run tauri build --bundles deb"
+                data-copy="bun install && bun run tauri build"
               >
                 copy
               </button>
             </div>
             <pre>bun install
-bun run tauri build --bundles deb
-<span class="c"># → src-tauri/target/release/bundle/deb/</span></pre>
+bun run tauri build
+<span class="c"># → src-tauri/target/release/bundle/</span></pre>
           </div>
         </div>
       </div>
@@ -919,9 +935,11 @@ bun run tauri build --bundles deb
           </div>
         </div>
         <p class="disclaimer">
-          Mandor is an independent, open-source project. It is not affiliated
-          with, endorsed by, or sponsored by Anthropic. “Claude” refers to the
-          <code>claude</code> command-line tool it hosts.
+          Mandor is an independent, open-source project released under the
+          <a href="https://github.com/otezz/mandor/blob/main/LICENSE">GPL-3.0</a>
+          license. It is not affiliated with, endorsed by, or sponsored by
+          Anthropic. “Claude” refers to the <code>claude</code> command-line tool
+          it hosts.
         </p>
       </div>
     </footer>
