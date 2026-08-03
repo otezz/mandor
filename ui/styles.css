@@ -439,6 +439,14 @@ body.maximized .window {
   opacity: 0.85;
 }
 
+/* Suspended (memory freed) session chip on a session pill */
+.s-suspended {
+  flex: none;
+  font-size: 11px;
+  line-height: 1;
+  opacity: 0.85;
+}
+
 /* PR badge on a session pill (click to open the PR) */
 .s-pr {
   flex: none;
@@ -673,6 +681,9 @@ body.dragging {
   right: 100%;
   margin-left: 0;
   margin-right: 2px;
+}
+
+.context-submenu.submenu-up {
   top: auto;
   bottom: -5px;
 }

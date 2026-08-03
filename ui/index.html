@@ -349,6 +349,24 @@
       </div>
     </div>
 
+    <div id="wake-modal" class="modal" hidden>
+      <div class="modal-backdrop" id="wake-backdrop"></div>
+      <div class="modal-box modal-form">
+        <div class="modal-header"><span>Resume session?</span></div>
+        <div class="ns-fields">
+          <p id="wake-msg" class="close-msg">—</p>
+        </div>
+        <div class="modal-actions">
+          <button id="wake-cancel" class="btn-secondary" type="button">
+            Cancel
+          </button>
+          <button id="wake-confirm" class="btn-primary" type="button">
+            Resume
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div id="restart-modal" class="modal" hidden>
       <div class="modal-backdrop" id="restart-backdrop"></div>
       <div class="modal-box modal-form">
@@ -502,6 +520,30 @@
                 per-session)</span
               >
             </label>
+            <label class="set-check">
+              <input id="set-suspend-idle" type="checkbox" />
+              <span
+                >Suspend idle sessions to free memory — an inactive session's
+                <code>claude</code> is stopped and it becomes a resumable pill
+                in the sidebar (click to resume; in-flight state is lost,
+                history is kept). Skips the active, remote, and incognito
+                sessions.</span
+              >
+            </label>
+            <div class="set-field">
+              <span class="set-label">Suspend after (hours idle)</span>
+              <input
+                id="set-suspend-hours"
+                class="ns-input"
+                type="number"
+                min="1"
+                max="168"
+                step="1"
+              />
+              <span class="set-hint"
+                >Only applies while “Suspend idle sessions” is on.</span
+              >
+            </div>
             <label class="set-check">
               <input id="set-notifications" type="checkbox" />
               <span

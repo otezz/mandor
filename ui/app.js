@@ -46,6 +46,8 @@ let settings = {
   bellSoundFile: "", // custom sound file path; "" = built-in synth beep
   resumeOnStart: false, // after a full restart, resume all sessions (staggered)
   remoteByDefault: false,
+  suspendIdle: false, // auto-suspend sessions idle this long, freeing their memory
+  suspendIdleHours: 3,
   customThemes: [],
 };
 
@@ -465,6 +467,7 @@ function persist() {
       name: s.name,
       groupId: s.groupId ?? null,
       wantRemote: !!s.wantRemote,
+      suspended: !!s.suspended, // stay dormant across restart, don't auto-resume
       pr: s.pr || null,
     }));
   try {
@@ -728,6 +731,13 @@ function buildRow(s) {
     inc.title = "Incognito — isolated config dir, nothing saved to disk";
     row.append(inc);
   }
+  if (s.suspended && !s.live && !s.exited) {
+    const z = document.createElement("span");
+    z.className = "s-suspended";
+    z.textContent = "💤";
+    z.title = "Suspended to free memory — click to resume";
+    row.append(z);
+  }
   row.append(name);
   if (s.pr && s.pr.prUrl) {
     const pr = document.createElement("span");
@@ -744,6 +754,10 @@ function buildRow(s) {
 
   row.addEventListener("click", (e) => {
     if (justDragged || e.target === close || name.isContentEditable) return;
+    if (s.suspended && !s.live) {
+      requestWake(s.id); // confirm before re-spawning claude
+      return;
+    }
     setActive(s.id);
   });
   close.addEventListener("click", (e) => {
@@ -996,6 +1010,39 @@ function closeContextMenu() {
   contextMenuEl = null;
 }
 
+// Position each fly-out submenu inside `container` so it stays on screen: flip it
+// left when it would overflow the right edge, flip it up when it would overflow the
+// bottom (and there's more room above), and clamp its height to the space left in
+// the chosen direction. Submenus are display:none until hover, so each is measured
+// by briefly forcing display:block (synchronous — no visible flash).
+function positionSubmenus(container) {
+  const margin = 6;
+  for (const parent of container.querySelectorAll(".context-parent")) {
+    const sub = parent.querySelector(".context-submenu");
+    if (!sub) continue;
+    sub.classList.remove("submenu-left", "submenu-up");
+    sub.style.maxHeight = "";
+    const prevDisplay = sub.style.display;
+    sub.style.display = "block";
+    const subW = sub.offsetWidth;
+    const subH = sub.scrollHeight;
+    sub.style.display = prevDisplay;
+
+    const pr = parent.getBoundingClientRect();
+    if (pr.right + subW + margin > window.innerWidth)
+      sub.classList.add("submenu-left");
+
+    const spaceBelow = window.innerHeight - (pr.top - 5) - margin;
+    const spaceAbove = pr.bottom + 5 - margin;
+    if (subH > spaceBelow && spaceAbove > spaceBelow)
+      sub.classList.add("submenu-up");
+    const avail = sub.classList.contains("submenu-up")
+      ? spaceAbove
+      : spaceBelow;
+    if (subH > avail) sub.style.maxHeight = `${Math.max(120, avail)}px`;
+  }
+}
+
 function copyText(text) {
   navigator.clipboard?.writeText(text).catch(() => {
     const ta = document.createElement("textarea");
@@ -1038,6 +1085,12 @@ function openContextMenu(e, kind, id) {
           invoke("write_pty", { id, data: "/remote-control\r" }).catch(
             () => {},
           ),
+      });
+    }
+    if (canSuspend(s)) {
+      items.push({
+        label: "Suspend (free memory)",
+        run: () => suspendSession(id),
       });
     }
     if (s.pr && s.pr.prUrl) {
@@ -1158,11 +1211,7 @@ function openContextMenu(e, kind, id) {
   const y = Math.min(e.clientY, window.innerHeight - rect.height - 6);
   menu.style.left = `${Math.max(6, x)}px`;
   menu.style.top = `${Math.max(6, y)}px`;
-  // Flip submenus leftward if the menu is near the right edge.
-  if (x + rect.width + 180 > window.innerWidth) {
-    for (const sub of menu.querySelectorAll(".context-submenu"))
-      sub.classList.add("submenu-left");
-  }
+  positionSubmenus(menu);
   contextMenuEl = menu;
 }
 
@@ -1189,6 +1238,7 @@ function addSession(rec) {
     agents: !!rec.agents, // runs `claude agents` (background-agent manager), not a session
     pr: rec.pr || null, // { prNumber, prUrl } if claude opened a PR in it
     live: !!rec.live, // a PTY is running for this session
+    suspended: !!rec.suspended, // memory freed; dormant until resumed (shows 💤)
     exited: false,
     term: null,
     fit: null,
@@ -1346,9 +1396,10 @@ function attachTerminal(s) {
     ? term.registerCharacterJoiner(ligatureJoiner)
     : null;
   setupSelectionAutoscroll(s, el);
-  term.onData((data) =>
-    invoke("write_pty", { id: s.id, data }).catch(() => {}),
-  );
+  term.onData((data) => {
+    s.lastActivityMs = Date.now(); // typing counts as activity
+    invoke("write_pty", { id: s.id, data }).catch(() => {});
+  });
   term.onResize(({ cols, rows }) =>
     invoke("resize_pty", { id: s.id, cols, rows }).catch(() => {}),
   );
@@ -1438,7 +1489,7 @@ const inStartupGrace = () => Date.now() - APP_START_MS < STARTUP_GRACE_MS;
 // Look up the session's PR from its transcript (claude records one when it runs
 // a PR git op). Refreshed when a turn ends, so a just-opened PR shows up soon.
 function refreshSessionPr(s) {
-  if (!s || s.incognito || s.agents) return; // no shared-store transcript for these
+  if (!s || s.incognito || s.agents) return; // no local transcript for these
   invoke("session_pr", { id: s.id, cwd: s.cwd, profileId: PROFILE_ID })
     .then((pr) => {
       if (JSON.stringify(pr ?? null) === JSON.stringify(s.pr ?? null)) return;
@@ -1451,6 +1502,7 @@ function refreshSessionPr(s) {
 
 function markWorking(s, len = 0) {
   const now = Date.now();
+  s.lastActivityMs = now; // output counts as activity (drives idle auto-suspend)
   if (!s.working) {
     s.working = true;
     s.attention = false; // it's active again — clear any prior dot
@@ -1509,6 +1561,24 @@ function markWorking(s, len = 0) {
 let bellAudioCtx = null;
 let bellBuffer = null; // decoded AudioBuffer of the current bell sound
 let bellBytes = null; // raw encoded bytes; decoded once a gesture-created ctx exists
+let bellKeepAlive = null; // silent source holding the output sink open
+
+// Some audio backends (notably the WSLg PulseAudio-over-RDP bridge) power the
+// output sink down when it goes idle and pop it back up for the next sound —
+// heard as a "crack" right before/after the bell. A permanent zero-gain source
+// keeps the sink open so it never power-cycles. Harmless on native backends
+// (the sink stays open there regardless). Started once, under a user gesture.
+function startBellKeepAlive() {
+  if (!bellAudioCtx || bellKeepAlive) return;
+  try {
+    const osc = bellAudioCtx.createOscillator();
+    const gain = bellAudioCtx.createGain();
+    gain.gain.value = 0;
+    osc.connect(gain).connect(bellAudioCtx.destination);
+    osc.start();
+    bellKeepAlive = osc; // retain a ref so it isn't garbage-collected
+  } catch {}
+}
 
 function ensureAudioCtx() {
   if (!bellAudioCtx) {
@@ -1538,6 +1608,7 @@ function unlockAudio() {
   if (!ctx) return;
   if (ctx.state === "suspended") ctx.resume().catch(() => {});
   decodeBell();
+  startBellKeepAlive();
 }
 for (const ev of ["pointerdown", "keydown"])
   window.addEventListener(ev, unlockAudio, { capture: true, passive: true });
@@ -1657,6 +1728,9 @@ function notifyAttention(s) {
 // (so it's resumable later); otherwise resume the existing conversation.
 async function spawnSession(s) {
   if (s.live) return;
+  s.suspending = false;
+  s.suspended = false;
+  s.lastActivityMs = Date.now();
   s.live = true;
   const args = {
     id: s.id,
@@ -1707,6 +1781,7 @@ function setActive(id) {
   if (s) {
     s.attention = false; // viewing it clears any attention flag
     s.alerted = false; // and re-arms the once-per-episode sound/notification
+    s.lastActivityMs = Date.now(); // focusing it counts as activity
   }
   // Materialize a cold session (restored across restart) on first activation.
   if (s && !s.term && !s.exited) attachTerminal(s);
@@ -1781,7 +1856,7 @@ function startSession(cwd, opts = {}) {
     incognito: !!opts.incognito,
     live: false,
   });
-  addRecentDir(cwd); // remember the directory for the new-session picker
+  addRecentDir(cwd);
   renderSessionList();
   persist();
   setActive(id); // attaches, sizes, and spawns
@@ -1815,6 +1890,19 @@ function openAgents() {
   setActive(id); // attaches + spawns `claude agents`
 }
 
+// Choose the session to focus when the active one goes away (closed, suspended,
+// popped out). Prefer an already-live session, then any non-suspended one; never
+// auto-focus a suspended session — setActive would re-spawn the claude its suspend
+// freed. Returns null when only suspended (or no other) sessions remain.
+function pickNextActive(excludeId) {
+  const usable = (sid) => sid !== excludeId && sessions.has(sid);
+  return (
+    sessionOrder.find((sid) => usable(sid) && sessions.get(sid).live) ??
+    sessionOrder.find((sid) => usable(sid) && !sessions.get(sid).suspended) ??
+    null
+  );
+}
+
 // Open a session in its own window. The main window then switches away from it
 // so it doesn't fight the pop-out over the shared PTY's size.
 function popOutSession(id) {
@@ -1824,7 +1912,7 @@ function popOutSession(id) {
     console.error(e),
   );
   if (activeId === id) {
-    const next = sessionOrder.find((sid) => sid !== id && sessions.has(sid));
+    const next = pickNextActive(id);
     if (next) setActive(next);
   }
 }
@@ -1847,10 +1935,10 @@ async function closeSession(id) {
 
   if (activeId === id) {
     activeId = null;
-    const next = sessionOrder.find((sid) => sessions.has(sid)) ?? null;
+    const next = pickNextActive(id);
     if (next) setActive(next);
     else {
-      emptyEl.style.display = "flex";
+      emptyEl.style.display = sessions.size ? "none" : "flex";
       updateTitle();
     }
   }
@@ -1859,17 +1947,82 @@ async function closeSession(id) {
   persist();
 }
 
+// A session can be suspended only if killing its PTY is safely reversible into a
+// resumable pill: not a background-agent (can't --resume) and not incognito (its
+// config dir is deleted on close).
+function canSuspend(s) {
+  return !!(s && s.live && !s.agents && !s.incognito);
+}
+
+// Suspend a session: kill its live `claude` (reclaiming ~250 MB) but keep it as a
+// cold, resumable entry in the sidebar. Clicking it re-materializes via --resume,
+// exactly like a session restored after a restart — the conversation history
+// survives (it's the on-disk transcript); any in-flight state (unsent input, a
+// pending tool/permission, the remote-control channel) does not.
+async function suspendSession(id) {
+  const s = sessions.get(id);
+  if (!canSuspend(s)) return;
+  s.suspending = true; // tell the pty-exit handler this close is intentional
+  try {
+    await invoke("close_pty", { id });
+  } catch (e) {
+    console.error(e);
+  }
+  if (s.term) {
+    s.term.dispose();
+    s.term = null;
+  }
+  if (s.el) {
+    s.el.remove();
+    s.el = null;
+  }
+  clearTimeout(s.workTimer);
+  clearTimeout(s.turnTimer);
+  s.live = false;
+  s.exited = false;
+  s.working = false;
+  s.suspended = true; // shows the 💤 chip until re-materialized
+  if (activeId === id) {
+    activeId = null;
+    const next = pickNextActive(id);
+    if (next) setActive(next);
+    else {
+      emptyEl.style.display = sessions.size ? "none" : "flex";
+      updateTitle();
+    }
+  }
+  renderSessionList();
+  updateAttentionIndicator();
+  persist();
+}
+
+// Opt-in auto-suspend: periodically suspend sessions that have been idle longer
+// than the configured threshold, to keep memory in check. Never touches the
+// active/working session, and only sessions canSuspend() allows.
+const SUSPEND_SWEEP_MS = 60_000;
+setInterval(() => {
+  if (POPOUT || !settings.suspendIdle) return;
+  const hours = Number(settings.suspendIdleHours) || 0;
+  if (hours <= 0) return;
+  const cutoff = Date.now() - hours * 3600_000;
+  for (const s of sessions.values()) {
+    if (s.id === activeId || s.working || !canSuspend(s)) continue;
+    if ((s.lastActivityMs || 0) > cutoff) continue;
+    suspendSession(s.id);
+  }
+}, SUSPEND_SWEEP_MS);
+
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 // Opt-in: resume every restored (cold) session on startup, spawned one-by-one
 // with a gap so N `claude` processes don't stampede at launch. Only the active
 // session's terminal is visible; the rest stay detached until switched to
-// (keeping the DOM light). Skips live/exited/incognito sessions.
+// (keeping the DOM light). Skips live/exited/incognito/suspended sessions.
 async function resumeAllOnStart() {
   for (const id of [...sessionOrder]) {
     if (id === activeId) continue; // the active one is resumed by setActive
     const s = sessions.get(id);
-    if (!s || s.live || s.exited || s.incognito) continue;
+    if (!s || s.live || s.exited || s.incognito || s.suspended) continue;
     if (!s.term) attachTerminal(s);
     await spawnSession(s);
     await sleep(400);
@@ -1895,7 +2048,15 @@ async function restore() {
 
   for (const rec of savedSessions) {
     if (sessions.has(rec.id)) continue;
-    addSession({ ...rec, spawnMode: "resume", live: liveIds.has(rec.id) });
+    const live = liveIds.has(rec.id);
+    // A suspended session's PTY was killed, so it won't be live; if one somehow
+    // reconnected as live, it isn't suspended anymore.
+    addSession({
+      ...rec,
+      spawnMode: "resume",
+      live,
+      suspended: !!rec.suspended && !live,
+    });
   }
   // Live PTYs missing from storage: incognito ones (never persisted), or after a
   // storage wipe while the backend survived.
@@ -1927,13 +2088,22 @@ async function restore() {
   // stale, and cold-restored sessions have none yet).
   for (const s of sessions.values()) refreshSessionPr(s);
   // Reopen the session that was active last (whether live after a reload or cold
-  // after a restart); otherwise prefer a live one, then the first in the list.
+  // after a restart); otherwise prefer a live one, then the first non-suspended in
+  // the list. Never auto-open a suspended session — that would re-spawn the claude
+  // its suspend freed; it stays a dormant 💤 pill until the user clicks it.
   const first =
-    (savedActiveId && sessions.has(savedActiveId) ? savedActiveId : null) ??
+    (savedActiveId &&
+    sessions.has(savedActiveId) &&
+    !sessions.get(savedActiveId).suspended
+      ? savedActiveId
+      : null) ??
     sessionOrder.find((id) => sessions.get(id)?.live) ??
-    sessionOrder.find((id) => sessions.has(id));
+    sessionOrder.find((id) => {
+      const s = sessions.get(id);
+      return s && !s.suspended;
+    });
   if (first) setActive(first);
-  else updateTitle(); // no session yet — still show the app/profile name
+  else updateTitle(); // no session (or all suspended) — still show the app name
   if (settings.resumeOnStart) resumeAllOnStart();
 }
 
@@ -1971,6 +2141,7 @@ listen("pty-output", ({ payload }) => {
 listen("pty-exit", ({ payload }) => {
   const s = sessions.get(payload.id);
   if (!s || s.exited) return;
+  if (s.suspending) return; // intentional suspend — suspendSession sets the cold state
   s.exited = true;
   s.live = false;
   renderSessionList();
@@ -2432,6 +2603,20 @@ document
   .getElementById("resume-backdrop")
   .addEventListener("click", closeResume);
 document.addEventListener("keydown", (e) => {
+  // Block webview reload shortcuts in release. A stray Ctrl+R / F5 (Ctrl+R is
+  // reverse-search in a shell/claude) would otherwise reload the whole webview,
+  // which reruns restore() and snaps the active session back to the last-saved
+  // one — looking like Mandor "randomly" jumping to a session. A focused terminal
+  // consumes Ctrl+R first (xterm sends it to the PTY), so reverse-search still
+  // works. Dev keeps reload for the Ctrl+R-reloads-UI workflow.
+  if (
+    !IS_DEV &&
+    (e.key === "F5" ||
+      ((e.ctrlKey || e.metaKey) && (e.key === "r" || e.key === "R")))
+  ) {
+    e.preventDefault();
+    return;
+  }
   if (e.ctrlKey || e.metaKey) {
     if (e.shiftKey && (e.key === "F" || e.key === "f")) {
       e.preventDefault();
@@ -2459,6 +2644,7 @@ document.addEventListener("keydown", (e) => {
   if (!findBar.hidden) closeFind();
   if (!resumeModal.hidden) closeResume();
   if (!closeModal.hidden) closeCloseModal();
+  if (!wakeModal.hidden) closeWakeModal();
   if (!restartModal.hidden) closeRestartModal();
   if (!attentionMenu.hidden) attentionMenu.hidden = true;
   if (!settingsModal.hidden) closeSettings();
@@ -2510,10 +2696,7 @@ function buildAppMenuProfiles() {
 
   parent.append(btn, sub);
   box.appendChild(parent);
-  // Flip the submenu leftward when the menu sits near the right edge.
-  const r = box.getBoundingClientRect();
-  if (r.left + r.width + 180 > window.innerWidth)
-    sub.classList.add("submenu-left");
+  positionSubmenus(box);
 }
 
 appMenuBtn.addEventListener("click", (e) => {
@@ -2676,7 +2859,11 @@ document
   .getElementById("new-session")
   .addEventListener("click", () => openNewSession());
 document.getElementById("resume-session").addEventListener("click", openResume);
-invoke("is_dev").then((dev) => document.body.classList.toggle("dev", !!dev));
+let IS_DEV = false;
+invoke("is_dev").then((dev) => {
+  IS_DEV = !!dev;
+  document.body.classList.toggle("dev", IS_DEV);
+});
 
 // --- close-session confirmation ---
 const closeModal = document.getElementById("close-modal");
@@ -2704,6 +2891,38 @@ function closeCloseModal() {
   closeModal.hidden = true;
   pendingCloseId = null;
 }
+
+// Confirm before resuming a suspended session — resuming re-spawns claude (the
+// memory the suspend reclaimed), so make it a deliberate choice rather than a
+// stray click.
+const wakeModal = document.getElementById("wake-modal");
+const wakeMsg = document.getElementById("wake-msg");
+let pendingWakeId = null;
+
+function requestWake(id) {
+  const s = sessions.get(id);
+  if (!s) return;
+  pendingWakeId = id;
+  wakeMsg.textContent = `“${s.name}” was suspended to free memory. Resuming starts claude again and replays the conversation.`;
+  wakeModal.hidden = false;
+}
+
+function closeWakeModal() {
+  wakeModal.hidden = true;
+  pendingWakeId = null;
+}
+
+document
+  .getElementById("wake-cancel")
+  .addEventListener("click", closeWakeModal);
+document
+  .getElementById("wake-backdrop")
+  .addEventListener("click", closeWakeModal);
+document.getElementById("wake-confirm").addEventListener("click", () => {
+  const id = pendingWakeId;
+  closeWakeModal();
+  if (id) setActive(id); // attaches + resumes the cold session
+});
 
 document
   .getElementById("close-cancel")
@@ -3223,6 +3442,9 @@ function openSettings() {
     settings.bellSound !== false;
   document.getElementById("set-resume-on-start").checked =
     !!settings.resumeOnStart;
+  document.getElementById("set-suspend-idle").checked = !!settings.suspendIdle;
+  document.getElementById("set-suspend-hours").value =
+    settings.suspendIdleHours || 3;
   invoke("plugin:autostart|is_enabled")
     .then((on) => {
       document.getElementById("set-run-on-startup").checked = !!on;
@@ -3338,6 +3560,17 @@ document
     settings.resumeOnStart = e.target.checked;
     persist();
   });
+document.getElementById("set-suspend-idle").addEventListener("change", (e) => {
+  settings.suspendIdle = e.target.checked;
+  persist();
+});
+document.getElementById("set-suspend-hours").addEventListener("change", (e) => {
+  const n = parseInt(e.target.value, 10);
+  settings.suspendIdleHours =
+    Number.isFinite(n) && n > 0 ? Math.min(168, n) : 3;
+  e.target.value = settings.suspendIdleHours;
+  persist();
+});
 document
   .getElementById("set-run-on-startup")
   .addEventListener("change", async (e) => {
