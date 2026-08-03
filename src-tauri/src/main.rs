@@ -19,7 +19,7 @@ use pty::{
     close_pty, create_profile, delete_profile, open_pty, resize_pty, running_ptys, set_claude_path,
     sweep_incognito_dirs, write_pty, PtyState,
 };
-use tauri_plugin_window_state::{AppHandleExt, StateFlags};
+use tauri_plugin_window_state::{AppHandleExt, StateFlags, WindowExt};
 
 /// Persist the window's size/position via the window-state plugin, but only while
 /// the main window is visible — Mandor hides to tray instead of closing, and a
@@ -33,23 +33,29 @@ fn save_window_geometry(app: &tauri::AppHandle) {
 }
 use sessions::{list_sessions, session_pr};
 
-/// GUI launches (from a .desktop entry) don't inherit the shell's PATH, so tools
-/// installed under e.g. ~/.local/bin (`claude`) or version managers aren't found
-/// and spawning fails with "No such file or directory". Merge the login shell's
-/// PATH — plus a few common user bin dirs as a fallback — into this process so
-/// spawned children (the interactive `claude` PTY) resolve the same as in a
-/// terminal.
+/// Cache file for the resolved login-shell PATH (see `ensure_tools_on_path`), under
+/// the platform cache dir — mirrors `incognito_base`.
 #[cfg(unix)]
-fn ensure_tools_on_path() {
-    use std::collections::HashSet;
+fn shell_path_cache() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    let cache = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library").join("Caches"));
+    #[cfg(not(target_os = "macos"))]
+    let cache = std::env::var_os("XDG_CACHE_HOME")
+        .map(PathBuf::from)
+        .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")));
+    cache.map(|c| c.join("mandor").join("shell-path"))
+}
+
+/// Ask the user's login shell for its PATH. Uses an *interactive* login shell
+/// (`-lic`) so entries added in `~/.zshrc`/`~/.bashrc` — version managers (nvm,
+/// cargo), `~/.local/bin`, etc. — are included; a non-interactive shell misses
+/// them. That makes this SLOW (~1s with a heavy rc), so its result is cached.
+#[cfg(unix)]
+fn probe_shell_path() -> String {
     use std::process::{Command, Stdio};
-
-    let home = std::env::var("HOME").unwrap_or_default();
-    let current = std::env::var("PATH").unwrap_or_default();
-
     let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
     // Markers isolate PATH from any banner an interactive rc file might print.
-    let shell_path = Command::new(&shell)
+    Command::new(&shell)
         .args(["-lic", "printf __MP__%s__MP__ \"$PATH\""])
         .stdin(Stdio::null())
         .output()
@@ -61,15 +67,23 @@ fn ensure_tools_on_path() {
             let end = s[start..].find("__MP__")? + start;
             Some(s[start..end].to_string())
         })
-        .unwrap_or_default();
+        .unwrap_or_default()
+}
 
+/// Merge a probed shell PATH with a few common user bin dirs and the current PATH
+/// (de-duplicated) and set it on this process, so spawned children (the `claude`
+/// PTY) resolve tools the same as an interactive terminal.
+#[cfg(unix)]
+fn apply_resolved_path(shell_path: &str) {
+    use std::collections::HashSet;
+    let home = std::env::var("HOME").unwrap_or_default();
+    let current = std::env::var("PATH").unwrap_or_default();
     let extras = [
         format!("{home}/.local/bin"),
         format!("{home}/.bun/bin"),
         format!("{home}/.npm-global/bin"),
         "/usr/local/bin".to_string(),
     ];
-
     let mut seen = HashSet::new();
     let mut parts = Vec::new();
     for p in shell_path
@@ -85,6 +99,57 @@ fn ensure_tools_on_path() {
     if !parts.is_empty() {
         std::env::set_var("PATH", parts.join(":"));
     }
+}
+
+/// GUI launches (from a .desktop entry) don't inherit the shell's PATH, so tools
+/// installed under e.g. ~/.local/bin (`claude`) or version managers aren't found
+/// and spawning fails with "No such file or directory". Resolve the login shell's
+/// PATH and merge it into this process.
+///
+/// Probing the shell is slow (~1s with a heavy interactive rc) and it ran on the
+/// main thread *before* the UI, so every launch stalled. The probe's result is now
+/// cached: after the first launch the cached PATH is applied instantly, and the
+/// cache is refreshed in the background (a file write only — never touching this
+/// process's env, so no cross-thread `set_var`) when it's more than a day old.
+#[cfg(unix)]
+fn ensure_tools_on_path() {
+    let cache = shell_path_cache();
+
+    // Fast path: apply the cached PATH without waiting on the login shell.
+    if let Some(path) = cache.as_ref().filter(|p| p.exists()) {
+        if let Ok(sp) = std::fs::read_to_string(path) {
+            apply_resolved_path(&sp);
+            let stale = std::fs::metadata(path)
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .map_or(true, |age| age.as_secs() > 24 * 60 * 60);
+            if stale {
+                let path = path.clone();
+                std::thread::spawn(move || write_shell_path_cache(&path, &probe_shell_path()));
+            }
+            return;
+        }
+    }
+
+    // First launch (no cache): probe synchronously so the first session resolves
+    // tools, then cache the result for subsequent launches.
+    let sp = probe_shell_path();
+    apply_resolved_path(&sp);
+    if let Some(path) = cache {
+        write_shell_path_cache(&path, &sp);
+    }
+}
+
+#[cfg(unix)]
+fn write_shell_path_cache(path: &std::path::Path, shell_path: &str) {
+    if shell_path.is_empty() {
+        return;
+    }
+    if let Some(dir) = path.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let _ = std::fs::write(path, shell_path);
 }
 
 /// Hide the window to the tray (keep-alive). Called from the custom titlebar's
@@ -353,8 +418,24 @@ fn main() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None,
         ))
-        // Remember the main window's size/position across launches.
-        .plugin(tauri_plugin_window_state::Builder::default().build())
+        // Remember the main window's size/position across launches. VISIBLE is
+        // deliberately excluded: the window starts hidden (config) and the frontend
+        // shows it once loaded — after the plugin has applied the saved size, so
+        // WebKitGTK doesn't map it at the config size first (a post-show resize
+        // doesn't stick on GTK). Letting the plugin own VISIBLE would also let it
+        // persist visible:false when quitting from the tray while hidden, which
+        // would relaunch the app invisible.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    StateFlags::SIZE
+                        | StateFlags::POSITION
+                        | StateFlags::MAXIMIZED
+                        | StateFlags::DECORATIONS
+                        | StateFlags::FULLSCREEN,
+                )
+                .build(),
+        )
         .manage(PtyState::default())
         .manage(AppStartup {
             exe: std::env::current_exe().ok(),
@@ -397,6 +478,23 @@ fn main() {
             // Intercept the window close button: hide to tray instead of quitting,
             // with a one-time notification so it's clear the app is still alive.
             if let Some(win) = app.get_webview_window("main") {
+                // The window is created hidden (config) so its saved size is applied
+                // before it's mapped — a resize after mapping doesn't stick on
+                // WebKitGTK. Size it here, while still hidden, then show it: the
+                // webview (and its JS) only initializes once the window is mapped, so
+                // the frontend can't reveal itself and Rust must. VISIBLE is left out
+                // of the flags on purpose — the plugin re-reads live visibility on
+                // exit, and quitting from the tray while hidden would otherwise
+                // persist visible:false and relaunch the app invisible.
+                let _ = win.restore_state(
+                    StateFlags::SIZE
+                        | StateFlags::POSITION
+                        | StateFlags::MAXIMIZED
+                        | StateFlags::FULLSCREEN,
+                );
+                let _ = win.show();
+                let _ = win.set_focus();
+
                 let win_hide = win.clone();
                 let notified = Arc::new(AtomicBool::new(false));
                 win.on_window_event(move |event| {
