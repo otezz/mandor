@@ -24,6 +24,15 @@ const sessions = new Map();
 const sessionOrder = []; // session ids in display order
 let activeId = null;
 
+// Split view: tile up to SPLIT_MAX session terminals at once. `splitIds` holds the
+// tiled sessions; `activeId` is the focused pane (keyboard + accent border). In
+// "single" mode only `activeId` shows, as before.
+const SPLIT_MAX = 4;
+let viewMode = "single"; // "single" | "split"
+let splitIds = []; // sessions tiled in split mode (≤ SPLIT_MAX)
+let savedViewMode = "single";
+let savedSplitIds = [];
+
 // groups: [{ id, name, collapsed, dir }]; a session's groupId points at one.
 let groups = [];
 let ungroupedCollapsed = false;
@@ -31,6 +40,7 @@ let savedSessions = []; // persisted session records, restored on launch
 let savedActiveId = null; // the session that was active last, restored on launch
 let recentDirs = []; // recently-used session directories, most recent first
 let sidebarCollapsed = false;
+let sessionFilter = "all"; // sidebar filter: "all" | "live" | "attention"
 let appFocused = true;
 let notificationsEnabled = true;
 let settings = {
@@ -468,6 +478,7 @@ function persist() {
       groupId: s.groupId ?? null,
       wantRemote: !!s.wantRemote,
       suspended: !!s.suspended, // stay dormant across restart, don't auto-resume
+      noSuspend: !!s.noSuspend, // stays exempt from auto-suspend across restarts
       pr: s.pr || null,
     }));
   try {
@@ -481,6 +492,9 @@ function persist() {
         settings,
         sessions: sess,
         activeId,
+        viewMode,
+        splitIds,
+        sessionFilter,
       }),
     );
   } catch (e) {
@@ -512,6 +526,11 @@ function loadStore() {
     if (!getTheme(settings.theme)) settings.theme = "frappe";
     savedSessions = Array.isArray(data.sessions) ? data.sessions : [];
     savedActiveId = data.activeId ?? null;
+    savedViewMode = data.viewMode === "split" ? "split" : "single";
+    savedSplitIds = Array.isArray(data.splitIds) ? data.splitIds : [];
+    sessionFilter = ["live", "attention"].includes(data.sessionFilter)
+      ? data.sessionFilter
+      : "all";
     loadProfiles();
   } catch (e) {
     console.error(e);
@@ -610,28 +629,64 @@ async function setGroupDir(g) {
 }
 
 // --- sidebar rendering ---
+// Sidebar filter: "all", "live" (a claude is running), or "attention" (finished a
+// turn / waiting). When filtering, matches are shown regardless of group collapse
+// so the filter reveals them, and groups with no matches are hidden.
+function passesFilter(s) {
+  if (!s) return false;
+  if (sessionFilter === "live") return !!s.live;
+  if (sessionFilter === "attention") return !!s.attention;
+  return true;
+}
+
 function renderSessionList() {
   listEl.replaceChildren();
+  const filtering = sessionFilter !== "all";
   const grouped = groups.length > 0;
   const claimed = new Set();
+  let shown = 0;
 
   for (const g of groups) {
-    listEl.appendChild(buildGroupHeader(g));
     const members = sessionOrder.filter(
       (id) => sessions.get(id)?.groupId === g.id,
     );
     members.forEach((id) => claimed.add(id));
-    if (!g.collapsed) {
-      for (const id of members) listEl.appendChild(buildRow(sessions.get(id)));
+    const vis = filtering
+      ? members.filter((id) => passesFilter(sessions.get(id)))
+      : members;
+    if (filtering && vis.length === 0) continue; // hide groups with no matches
+    listEl.appendChild(buildGroupHeader(g));
+    if (filtering || !g.collapsed) {
+      for (const id of vis) {
+        listEl.appendChild(buildRow(sessions.get(id)));
+        shown++;
+      }
     }
   }
 
   const ungrouped = sessionOrder.filter(
     (id) => sessions.has(id) && !claimed.has(id),
   );
-  if (grouped) listEl.appendChild(buildUngroupedHeader(ungrouped.length));
-  if (!grouped || !ungroupedCollapsed) {
-    for (const id of ungrouped) listEl.appendChild(buildRow(sessions.get(id)));
+  const visUngrouped = filtering
+    ? ungrouped.filter((id) => passesFilter(sessions.get(id)))
+    : ungrouped;
+  if (grouped && (!filtering || visUngrouped.length))
+    listEl.appendChild(buildUngroupedHeader(visUngrouped.length));
+  if (!grouped || !ungroupedCollapsed || filtering) {
+    for (const id of visUngrouped) {
+      listEl.appendChild(buildRow(sessions.get(id)));
+      shown++;
+    }
+  }
+
+  if (filtering && shown === 0) {
+    const hint = document.createElement("div");
+    hint.className = "filter-empty";
+    hint.textContent =
+      sessionFilter === "live"
+        ? "No running sessions."
+        : "Nothing needs attention.";
+    listEl.appendChild(hint);
   }
 }
 
@@ -730,6 +785,13 @@ function buildRow(s) {
     inc.textContent = "🕶";
     inc.title = "Incognito — isolated config dir, nothing saved to disk";
     row.append(inc);
+  }
+  if (s.noSuspend) {
+    const pin = document.createElement("span");
+    pin.className = "s-pinned";
+    pin.textContent = "📌";
+    pin.title = "Exempt from idle auto-suspend";
+    row.append(pin);
   }
   if (s.suspended && !s.live && !s.exited) {
     const z = document.createElement("span");
@@ -1093,6 +1155,23 @@ function openContextMenu(e, kind, id) {
         run: () => suspendSession(id),
       });
     }
+    if (!s.agents && !s.incognito) {
+      items.push({
+        label: "Never auto-suspend",
+        current: !!s.noSuspend,
+        run: () => toggleNoSuspend(id),
+      });
+    }
+    if (!s.agents) {
+      if (splitIds.includes(id)) {
+        items.push({
+          label: "Remove from split",
+          run: () => removeFromSplit(id),
+        });
+      } else if (splitIds.length < SPLIT_MAX) {
+        items.push({ label: "Add to split view", run: () => addToSplit(id) });
+      }
+    }
     if (s.pr && s.pr.prUrl) {
       items.push({
         label: `Open PR #${s.pr.prNumber}`,
@@ -1135,6 +1214,13 @@ function openContextMenu(e, kind, id) {
     const g = groups.find((x) => x.id === id);
     if (!g) return;
     items.push({ label: "New session here", run: () => openNewSession(id) });
+    const tileable = sessionOrder.filter(
+      (sid) =>
+        sessions.get(sid)?.groupId === id && !sessions.get(sid).suspended,
+    );
+    if (tileable.length >= 2) {
+      items.push({ label: "Tile group", run: () => tileGroup(id) });
+    }
     items.push({ sep: true });
     items.push({
       label: "Rename",
@@ -1239,6 +1325,7 @@ function addSession(rec) {
     pr: rec.pr || null, // { prNumber, prUrl } if claude opened a PR in it
     live: !!rec.live, // a PTY is running for this session
     suspended: !!rec.suspended, // memory freed; dormant until resumed (shows 💤)
+    noSuspend: !!rec.noSuspend, // exempt from idle auto-suspend (shows 📌)
     exited: false,
     term: null,
     fit: null,
@@ -1339,6 +1426,26 @@ function attachTerminal(s) {
   const search = new SearchAddon.SearchAddon();
   term.loadAddon(search);
   term.open(el);
+  // Pane chrome (only shown in split view via CSS): a name label and a ✕ that
+  // removes the pane from the split without closing the session. Clicking anywhere
+  // in the host focuses that pane.
+  const paneLabel = document.createElement("span");
+  paneLabel.className = "pane-label";
+  paneLabel.textContent = s.name;
+  const paneClose = document.createElement("button");
+  paneClose.type = "button";
+  paneClose.className = "pane-close";
+  paneClose.textContent = "✕";
+  paneClose.title = "Remove from split (keeps the session running)";
+  paneClose.addEventListener("mousedown", (e) => e.stopPropagation());
+  paneClose.addEventListener("click", (e) => {
+    e.stopPropagation();
+    removeFromSplit(s.id);
+  });
+  el.append(paneLabel, paneClose);
+  el.addEventListener("mousedown", () => {
+    if (viewMode === "split" && activeId !== s.id) setFocusedPane(s.id);
+  });
   // Let app shortcuts reach the document handler instead of the PTY:
   // Ctrl/Cmd + , = - _  and  Ctrl/Cmd+Shift+F (find in session).
   term.attachCustomKeyEventHandler((ev) => {
@@ -1434,12 +1541,21 @@ function buildAttentionMenu() {
   }
 }
 
+let _attnKey = "";
 function updateAttentionIndicator() {
   if (POPOUT) return;
-  const any = [...sessions.values()].some((x) => x.attention);
+  const attn = [...sessions.values()]
+    .filter((x) => x.attention)
+    .map((x) => x.id);
+  const any = attn.length > 0;
   attentionDropdown.hidden = !any;
   if (!any) attentionMenu.hidden = true;
   else if (!attentionMenu.hidden) buildAttentionMenu(); // keep an open list fresh
+  // Keep the "attention" sidebar filter live, but only re-render the list when the
+  // set of attention sessions changes (this runs on every badge refresh).
+  const key = attn.sort().join(",");
+  if (sessionFilter === "attention" && key !== _attnKey) renderSessionList();
+  _attnKey = key;
 }
 
 if (!POPOUT) {
@@ -1775,8 +1891,193 @@ async function spawnSession(s) {
   renderSessionList();
 }
 
+// The session terminals to show right now: in split mode the tiled panes, else
+// just the active one. Filtered to sessions that still exist.
+function visibleIds() {
+  const ids =
+    viewMode === "split" && splitIds.length
+      ? splitIds
+      : activeId
+        ? [activeId]
+        : [];
+  return ids.filter((sid) => sessions.has(sid));
+}
+
+// Lay out the terminal area: single (one terminal filling it) or a tiled grid.
+// Shows/hides each terminal-host, marks the focused pane, and fits every visible
+// terminal (fit() → term.onResize → resize_pty, so the PTY tracks its pane size).
+function renderView() {
+  const visible = visibleIds();
+  const split = viewMode === "split" && visible.length > 1;
+  termsEl.classList.toggle("split", split);
+  termsEl.dataset.panes = split ? String(visible.length) : "";
+  for (const [sid, x] of sessions) {
+    if (!x.el) continue;
+    const show = visible.includes(sid);
+    x.el.style.display = show ? "block" : "none";
+    x.el.classList.toggle("pane-focused", split && sid === activeId);
+    if (show) {
+      const lbl = x.el.querySelector(".pane-label");
+      if (lbl) lbl.textContent = x.name;
+    }
+  }
+  // Reading each host's size after the display/grid change forces layout, so a
+  // synchronous fit picks up the final pane dimensions.
+  for (const sid of visible) {
+    const x = sessions.get(sid);
+    if (x && x.fit && x.term) {
+      try {
+        x.fit.fit();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
+}
+
+// Add a session as a split pane (entering split mode), materializing/resuming it.
+function addToSplit(id) {
+  const s = sessions.get(id);
+  if (!s || s.agents) return;
+  if (splitIds.includes(id)) {
+    setFocusedPane(id);
+    return;
+  }
+  if (splitIds.length >= SPLIT_MAX) return; // cap reached
+  // Suspended sessions must be resumed to tile — confirm first (re-spawns claude).
+  if (s.suspended && !s.live) {
+    requestWake(id, () => addToSplitNow(id));
+    return;
+  }
+  addToSplitNow(id);
+}
+
+function addToSplitNow(id) {
+  const s = sessions.get(id);
+  if (!s || splitIds.includes(id) || splitIds.length >= SPLIT_MAX) return;
+  const panes = splitIds.slice();
+  if (panes.length === 0) {
+    // Starting a fresh split needs a second pane: pair with the active session, or
+    // (if this IS the active one) with another open, non-suspended session.
+    let partner = activeId && activeId !== id ? activeId : null;
+    if (!partner)
+      partner =
+        sessionOrder.find((sid) => sid !== id && sessions.get(sid)?.live) ??
+        sessionOrder.find(
+          (sid) =>
+            sid !== id && sessions.has(sid) && !sessions.get(sid).suspended,
+        );
+    if (!partner) {
+      alert(
+        "Open another session first — a split needs at least two sessions.",
+      );
+      return;
+    }
+    panes.push(partner);
+  }
+  panes.push(id);
+  splitIds = panes.slice(0, SPLIT_MAX);
+  viewMode = "split";
+  activeId = id;
+  // Materialize every pane (attach a terminal + resume cold ones) before laying out.
+  for (const sid of splitIds) {
+    const x = sessions.get(sid);
+    if (!x) continue;
+    if (!x.term && !x.exited) attachTerminal(x);
+    if (!x.live && !x.exited && x.term) spawnSession(x);
+  }
+  renderView();
+  renderSessionList();
+  persist();
+}
+
+// Drop a session from the split (keeps it running); collapse to single view when
+// one or zero panes remain. Used by the pane ✕ and when a pane is closed/suspended.
+function dropFromSplit(id) {
+  const i = splitIds.indexOf(id);
+  if (i === -1) return;
+  splitIds.splice(i, 1);
+  if (splitIds.length <= 1) {
+    const survivor = splitIds[0] ?? null;
+    splitIds = [];
+    viewMode = "single";
+    if (survivor && activeId === id) activeId = survivor;
+  } else if (activeId === id) {
+    activeId = splitIds[0];
+  }
+}
+
+function removeFromSplit(id) {
+  if (!splitIds.includes(id)) return;
+  dropFromSplit(id);
+  renderView();
+  const a = sessions.get(activeId);
+  if (a && a.term) a.term.focus();
+  renderSessionList();
+  persist();
+}
+
+// Tile a whole group: fill the split with its first (non-suspended) members.
+function tileGroup(gid) {
+  const members = sessionOrder.filter(
+    (sid) => sessions.get(sid)?.groupId === gid && !sessions.get(sid).suspended,
+  );
+  const pick = members.slice(0, SPLIT_MAX);
+  if (pick.length < 2) return; // nothing meaningful to tile
+  if (members.length > SPLIT_MAX)
+    console.log(
+      `[mandor] Tile group: showing first ${SPLIT_MAX} of ${members.length} sessions`,
+    );
+  splitIds = [];
+  viewMode = "split";
+  for (const sid of pick) {
+    const s = sessions.get(sid);
+    if (s && !s.term && !s.exited) attachTerminal(s);
+    splitIds.push(sid);
+  }
+  activeId = pick[0];
+  renderView();
+  for (const sid of pick) {
+    const s = sessions.get(sid);
+    if (s && !s.live && !s.exited && s.term) spawnSession(s);
+  }
+  renderSessionList();
+  persist();
+}
+
+// Focus a pane without relaying out (used when clicking a tiled pane).
+function setFocusedPane(id) {
+  if (!sessions.has(id)) return;
+  activeId = id;
+  const s = sessions.get(id);
+  if (s) {
+    s.attention = false;
+    s.alerted = false;
+    s.lastActivityMs = Date.now();
+  }
+  const split = viewMode === "split" && visibleIds().length > 1;
+  for (const [sid, x] of sessions)
+    if (x.el) x.el.classList.toggle("pane-focused", split && sid === id);
+  for (const row of listEl.querySelectorAll(".session-row"))
+    row.classList.toggle("active", row.dataset.id === id);
+  updateTitle();
+  if (s && s.term) s.term.focus();
+  persist();
+}
+
 function setActive(id) {
   const s = sessions.get(id);
+  // In split view: focusing a tiled session just moves the highlight; selecting a
+  // session that isn't tiled leaves split view for the normal single view.
+  if (viewMode === "split" && splitIds.includes(id)) {
+    setFocusedPane(id);
+    for (const x of sessions.values()) refreshBadge(x);
+    return;
+  }
+  if (viewMode === "split") {
+    viewMode = "single";
+    splitIds = [];
+  }
   activeId = id;
   if (s) {
     s.attention = false; // viewing it clears any attention flag
@@ -1785,9 +2086,7 @@ function setActive(id) {
   }
   // Materialize a cold session (restored across restart) on first activation.
   if (s && !s.term && !s.exited) attachTerminal(s);
-  for (const [sid, x] of sessions) {
-    if (x.el) x.el.style.display = sid === id ? "block" : "none";
-  }
+  renderView();
   for (const row of listEl.querySelectorAll(".session-row")) {
     row.classList.toggle("active", row.dataset.id === id);
   }
@@ -1911,9 +2210,23 @@ function popOutSession(id) {
   invoke("open_session_window", { id, name: s.name }).catch((e) =>
     console.error(e),
   );
-  if (activeId === id) {
+  const wasActive = activeId === id;
+  const inSplit = splitIds.includes(id);
+  dropFromSplit(id);
+  if (wasActive && activeId === id) {
     const next = pickNextActive(id);
     if (next) setActive(next);
+    else {
+      activeId = null;
+      updateTitle();
+      renderView();
+    }
+  } else if (wasActive || inSplit) {
+    renderView(); // active moved to a surviving pane, or a pane was dropped
+    const a = sessions.get(activeId);
+    if (a && a.term) a.term.focus();
+    renderSessionList();
+    persist();
   }
 }
 
@@ -1933,14 +2246,22 @@ async function closeSession(id) {
   const oi = sessionOrder.indexOf(id);
   if (oi !== -1) sessionOrder.splice(oi, 1);
 
-  if (activeId === id) {
+  const wasActive = activeId === id;
+  dropFromSplit(id); // remove from tiles if present (may reassign activeId)
+  if (wasActive && activeId === id) {
     activeId = null;
     const next = pickNextActive(id);
     if (next) setActive(next);
     else {
       emptyEl.style.display = sessions.size ? "none" : "flex";
       updateTitle();
+      renderView();
     }
+  } else {
+    // active unchanged, or moved to a surviving pane, or a non-active pane dropped
+    renderView();
+    const a = sessions.get(activeId);
+    if (a && a.term) a.term.focus();
   }
   renderSessionList();
   updateAttentionIndicator();
@@ -1952,6 +2273,17 @@ async function closeSession(id) {
 // config dir is deleted on close).
 function canSuspend(s) {
   return !!(s && s.live && !s.agents && !s.incognito);
+}
+
+// Exempt a session from idle auto-suspend (or un-exempt it). Manual suspend still
+// works — this only holds off the automatic sweep, for sessions that must keep
+// running (a long build, a dev server, an agent mid-task).
+function toggleNoSuspend(id) {
+  const s = sessions.get(id);
+  if (!s) return;
+  s.noSuspend = !s.noSuspend;
+  renderSessionList();
+  persist();
 }
 
 // Suspend a session: kill its live `claude` (reclaiming ~250 MB) but keep it as a
@@ -1982,14 +2314,22 @@ async function suspendSession(id) {
   s.exited = false;
   s.working = false;
   s.suspended = true; // shows the 💤 chip until re-materialized
-  if (activeId === id) {
+  const wasActive = activeId === id;
+  dropFromSplit(id); // a suspended session can't stay tiled
+  if (wasActive && activeId === id) {
     activeId = null;
     const next = pickNextActive(id);
     if (next) setActive(next);
     else {
       emptyEl.style.display = sessions.size ? "none" : "flex";
       updateTitle();
+      renderView();
     }
+  } else {
+    // active unchanged, or moved to a surviving pane, or a non-active pane dropped
+    renderView();
+    const a = sessions.get(activeId);
+    if (a && a.term) a.term.focus();
   }
   renderSessionList();
   updateAttentionIndicator();
@@ -1998,7 +2338,8 @@ async function suspendSession(id) {
 
 // Opt-in auto-suspend: periodically suspend sessions that have been idle longer
 // than the configured threshold, to keep memory in check. Never touches the
-// active/working session, and only sessions canSuspend() allows.
+// active/working session, a tiled pane, one the user exempted (noSuspend), and
+// only sessions canSuspend() allows.
 const SUSPEND_SWEEP_MS = 60_000;
 setInterval(() => {
   if (POPOUT || !settings.suspendIdle) return;
@@ -2006,7 +2347,14 @@ setInterval(() => {
   if (hours <= 0) return;
   const cutoff = Date.now() - hours * 3600_000;
   for (const s of sessions.values()) {
-    if (s.id === activeId || s.working || !canSuspend(s)) continue;
+    if (
+      s.id === activeId ||
+      splitIds.includes(s.id) ||
+      s.working ||
+      s.noSuspend || // user-exempted ("Never auto-suspend")
+      !canSuspend(s)
+    )
+      continue;
     if ((s.lastActivityMs || 0) > cutoff) continue;
     suspendSession(s.id);
   }
@@ -2034,6 +2382,7 @@ async function resumeAllOnStart() {
 async function restore() {
   loadStore();
   applySidebarCollapsed();
+  updateFilterButtons();
   applySettings();
   let running = [];
   try {
@@ -2104,6 +2453,23 @@ async function restore() {
     });
   if (first) setActive(first);
   else updateTitle(); // no session (or all suspended) — still show the app name
+  // Restore a split layout — but only for panes whose PTY is live (reconnected).
+  // Don't auto-spawn cold/suspended members; the user re-tiles those deliberately.
+  if (savedViewMode === "split") {
+    const liveTiled = savedSplitIds.filter((sid) => sessions.get(sid)?.live);
+    if (liveTiled.length >= 2) {
+      splitIds = liveTiled.slice(0, SPLIT_MAX);
+      viewMode = "split";
+      for (const sid of splitIds) {
+        const s = sessions.get(sid);
+        if (s && !s.term) attachTerminal(s);
+      }
+      if (!splitIds.includes(activeId)) activeId = splitIds[0];
+      renderView();
+      renderSessionList();
+      persist();
+    }
+  }
   if (settings.resumeOnStart) resumeAllOnStart();
 }
 
@@ -2149,8 +2515,16 @@ listen("pty-exit", ({ payload }) => {
 });
 
 const resizeObserver = new ResizeObserver(() => {
-  const s = sessions.get(activeId);
-  if (s && s.fit) s.fit.fit();
+  for (const sid of visibleIds()) {
+    const s = sessions.get(sid);
+    if (s && s.fit && s.term) {
+      try {
+        s.fit.fit();
+      } catch {
+        /* ignore */
+      }
+    }
+  }
 });
 resizeObserver.observe(termsEl);
 
@@ -2859,6 +3233,19 @@ document
   .getElementById("new-session")
   .addEventListener("click", () => openNewSession());
 document.getElementById("resume-session").addEventListener("click", openResume);
+
+function updateFilterButtons() {
+  for (const b of document.querySelectorAll("#session-filter .filter-btn"))
+    b.classList.toggle("active", b.dataset.filter === sessionFilter);
+}
+function setSessionFilter(f) {
+  sessionFilter = f;
+  updateFilterButtons();
+  renderSessionList();
+  persist();
+}
+for (const b of document.querySelectorAll("#session-filter .filter-btn"))
+  b.addEventListener("click", () => setSessionFilter(b.dataset.filter));
 let IS_DEV = false;
 invoke("is_dev").then((dev) => {
   IS_DEV = !!dev;
@@ -2898,11 +3285,13 @@ function closeCloseModal() {
 const wakeModal = document.getElementById("wake-modal");
 const wakeMsg = document.getElementById("wake-msg");
 let pendingWakeId = null;
+let pendingWakeAction = null; // what to run on confirm (default: focus the session)
 
-function requestWake(id) {
+function requestWake(id, onConfirm) {
   const s = sessions.get(id);
   if (!s) return;
   pendingWakeId = id;
+  pendingWakeAction = onConfirm || (() => setActive(id));
   wakeMsg.textContent = `“${s.name}” was suspended to free memory. Resuming starts claude again and replays the conversation.`;
   wakeModal.hidden = false;
 }
@@ -2910,6 +3299,7 @@ function requestWake(id) {
 function closeWakeModal() {
   wakeModal.hidden = true;
   pendingWakeId = null;
+  pendingWakeAction = null;
 }
 
 document
@@ -2919,9 +3309,9 @@ document
   .getElementById("wake-backdrop")
   .addEventListener("click", closeWakeModal);
 document.getElementById("wake-confirm").addEventListener("click", () => {
-  const id = pendingWakeId;
+  const act = pendingWakeAction;
   closeWakeModal();
-  if (id) setActive(id); // attaches + resumes the cold session
+  if (act) act(); // resumes the cold session (focus it, or add it to the split)
 });
 
 document
