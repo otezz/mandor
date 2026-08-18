@@ -226,11 +226,70 @@ async fn update_available(startup: tauri::State<'_, AppStartup>) -> Result<bool,
     .map_err(|e| e.to_string())
 }
 
+/// The executable to relaunch on restart. `current_exe()` — what Tauri's own
+/// `restart()` uses — is unreliable here: "Restart to update" runs precisely
+/// *after* the binary was replaced, and installing over a running program unlinks
+/// the old inode, so Linux resolves /proc/self/exe to "<path> (deleted)". That
+/// path doesn't exist, so re-launching it fails and the app never comes back.
+/// Prefer $APPIMAGE (the .AppImage itself, not its temporary mount), then the path
+/// captured at launch (before any replacement), then a de-"(deleted)" current_exe.
+fn relaunch_path(startup: &AppStartup) -> Option<PathBuf> {
+    if let Some(appimage) = std::env::var_os("APPIMAGE") {
+        let p = PathBuf::from(appimage);
+        if p.exists() {
+            return Some(p);
+        }
+    }
+    if let Some(p) = startup.exe.as_ref().filter(|p| p.exists()) {
+        return Some(p.clone());
+    }
+    let cur = std::env::current_exe().ok()?;
+    let cleaned = cur
+        .to_str()
+        .and_then(|s| s.strip_suffix(" (deleted)"))
+        .map(PathBuf::from)
+        .unwrap_or(cur);
+    cleaned.exists().then_some(cleaned)
+}
+
 /// Relaunch the app (from the "Restart to update" prompt). Live PTYs are killed
 /// via the ExitRequested handler; persisted sessions come back cold, resumable.
 #[tauri::command]
-fn restart_app(app: tauri::AppHandle) {
+fn restart_app(app: tauri::AppHandle, startup: tauri::State<'_, AppStartup>) {
     save_window_geometry(&app);
+    let Some(exe) = relaunch_path(&startup) else {
+        app.restart(); // nothing better to try
+    };
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // The new process can't start while this one lives: the single-instance
+        // plugin would make it hand off to this (dying) instance and exit, leaving
+        // nothing running. So the relaunch waits for this pid to disappear (bounded,
+        // ~10s) before exec'ing. Detached — own process group, no inherited stdio —
+        // so it survives this process exiting.
+        let script = format!(
+            "i=0; while kill -0 {pid} 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done; exec \"$0\"",
+            pid = std::process::id()
+        );
+        let spawned = std::process::Command::new("sh")
+            .arg("-c")
+            .arg(script)
+            .arg(&exe)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .process_group(0)
+            .spawn()
+            .is_ok();
+        if !spawned {
+            app.restart();
+        }
+        app.exit(0); // ExitRequested → kill_all, then the waiter starts the new one
+    }
+
+    #[cfg(not(unix))]
     app.restart();
 }
 
