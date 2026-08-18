@@ -84,9 +84,18 @@ chmod +x Mandor_*_amd64.AppImage && ./Mandor_*_amd64.AppImage   # any distro
 Arch / CachyOS: the AppImage works as-is.
 
 **macOS** (universal — Apple Silicon & Intel): open `Mandor_*_universal.dmg` and
-drag Mandor to Applications. The app is **not code-signed**, so on first launch
-right-click it → **Open** (or run `xattr -cr /Applications/Mandor.app`) to get
-past Gatekeeper.
+drag Mandor to Applications. The build is only ad-hoc signed — not signed with a
+Developer ID and not notarized — so Gatekeeper refuses to launch it while the
+download carries a quarantine flag (`spctl` reports `no usable signature`).
+Clear the flag once per install:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/Mandor.app
+```
+
+Repeat after installing each new build; macOS re-applies quarantine to every
+download. The old right-click → **Open** trick is unreliable here: macOS 15
+(Sequoia) removed that bypass for ad-hoc-signed apps.
 
 **Windows** (x86_64, experimental): run `Mandor_*_x64-setup.exe`. The installer
 is **unsigned**, so SmartScreen will warn you (More info → Run anyway). This
