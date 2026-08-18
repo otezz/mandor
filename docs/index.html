@@ -698,10 +698,13 @@
           </p>
         </div>
         <p class="note">
-          Terminal tabs stop scaling the moment you're running claude in five
-          places at once: which one's in which repo, which is waiting on you,
-          which were you about to resume? Mandor keeps each session a genuine
-          terminal and gives the pile a home.
+          I built this for my own working day. My work is spread across separate
+          repos — backend, frontend, research — and a single ticket usually spans
+          more than one of them: one touching both BE and FE means two sessions,
+          in two repos, at two different stages. Terminal tabs stop scaling right
+          about there: which one's in which repo, which is waiting on you, which
+          were you about to resume? Mandor keeps each session a genuine terminal
+          and gives the pile a home.
         </p>
       </div>
     </section>
@@ -756,6 +759,23 @@
             <p>
               A titlebar bell, desktop notifications, and an audible chime the
               moment a background session finishes or asks for input.
+            </p>
+          </div>
+          <div class="card">
+            <div class="gl">▦</div>
+            <h3>Split view</h3>
+            <p>
+              Tile up to four sessions in one window — the backend and frontend
+              halves of the same ticket, side by side.
+            </p>
+          </div>
+          <div class="card">
+            <div class="gl">◍</div>
+            <h3>Suspend idle sessions</h3>
+            <p>
+              Stop an idle session's claude to reclaim its memory while keeping it
+              resumable — by hand, or automatically after N hours. Pin the ones
+              that must keep running.
             </p>
           </div>
           <div class="card">
@@ -814,9 +834,16 @@
             <a href="https://github.com/otezz/mandor/releases/latest"
               >Download the latest release</a
             >
-            — Linux (<code>.deb</code>, <code>.rpm</code>, or AppImage) or a macOS
-            universal <code>.dmg</code>. Mandor launches <code>claude</code> from
-            your <code>PATH</code>, so make sure the CLI runs in a terminal first.
+            — Linux (<code>.deb</code>, <code>.rpm</code>, AppImage), a macOS
+            universal <code>.dmg</code>, or a Windows <code>.exe</code>. Mandor
+            launches <code>claude</code> from your <code>PATH</code>, so make sure
+            the CLI runs in a terminal first.
+          </p>
+          <p>
+            <b>Tested on Ubuntu only.</b> I use Mandor daily on Ubuntu 26.04; the
+            macOS and Windows builds compile and install, but I don't run them day
+            to day. The macOS <code>.dmg</code> and Windows installer are also
+            unsigned, so both will warn on first launch.
           </p>
         </div>
         <div class="install">
@@ -847,6 +874,15 @@ xattr -cr /Applications/Mandor.app</pre>
           </div>
           <div class="code">
             <div class="head">
+              <span>Windows (experimental)</span>
+              <button class="copy" data-copy="Mandor_x64-setup.exe">copy</button>
+            </div>
+            <pre><span class="c"># run the installer; it is unsigned, so</span>
+<span class="c"># SmartScreen warns → More info → Run anyway</span>
+Mandor_*_x64-setup.exe</pre>
+          </div>
+          <div class="code">
+            <div class="head">
               <span>Build from source</span>
               <button
                 class="copy"
@@ -860,6 +896,27 @@ bun run tauri build
 <span class="c"># → src-tauri/target/release/bundle/</span></pre>
           </div>
         </div>
+      </div>
+    </section>
+
+    <section class="band" id="fork" style="border-top: 1px solid var(--surface0)">
+      <div class="wrap">
+        <div class="sec-head">
+          <span class="eyebrow">A word on scope</span>
+          <h2>This is one person's workflow. Fork it.</h2>
+          <p>
+            Mandor is shaped end to end by how <em>I</em> work — the grouping, the
+            defaults, the shortcuts, what earns a notification and what doesn't.
+            That's the point: it's a tool I use every day, not a product trying to
+            suit everyone.
+          </p>
+        </div>
+        <p class="note">
+          So if something here doesn't fit your style, don't wait on me — fork it
+          and make it yours. That's the intended outcome, and the GPL-3.0 license
+          guarantees you can. Issues and pull requests are welcome too, but a fork
+          that fits your day beats a feature request that half-fits mine.
+        </p>
       </div>
     </section>
 

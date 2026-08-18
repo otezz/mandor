@@ -20,15 +20,23 @@ reimplemented: native permission prompts, slash commands, `/resume`, output
 styling, and `--remote-control` all just work. Mandor adds the part the terminal
 doesn't give you — a proper home for many sessions at once.
 
-> **Status:** early but usable. Linux (`.deb`) is the primary target today.
+> **Status:** early, but a daily driver. I've used Mandor every day for about a
+> month on **Ubuntu 26.04** — that's the only platform I actually run it on.
+> macOS and Windows builds exist and install, but I've never used them day to
+> day; treat them as untested.
 
 ## Why Mandor
 
-Running several `claude` sessions in plain terminal tabs gets unwieldy fast: you
-lose track of which session is in which directory, which one is waiting on you,
-and which one you were about to resume. Mandor keeps each session as a real
-terminal but wraps them in a sidebar you can actually navigate — so juggling a
-dozen sessions across projects stays calm instead of chaotic.
+I built this for my own working day. My work is spread across separate repos —
+backend, frontend, research — and a single ticket usually spans more than one of
+them: one touching both BE and FE means two sessions, in two repos, at two
+different stages. Running that in plain terminal tabs gets unwieldy fast — you
+lose track of which session is in which repo, which one is waiting on you, and
+which one you were about to resume.
+
+Mandor keeps each session a real terminal but wraps the pile in a sidebar you can
+actually navigate, so juggling a dozen sessions across projects stays calm
+instead of chaotic.
 
 The design goal is deliberately narrow: **be the best possible shell around the
 real CLI, and reimplement none of it.** Mandor never parses or re-renders the
@@ -48,6 +56,13 @@ conversation — it hosts the genuine `claude` process and stays out of the way.
   toggle ligatures.
 - **Attention & notifications** — a titlebar bell and desktop notifications tell
   you when a session finishes or needs input; an audible bell is included.
+- **Split view** — tile up to four sessions in one window to watch related work
+  (a backend and a frontend session on the same ticket) side by side.
+- **Suspend idle sessions** — stop a session's `claude` to reclaim its memory
+  while keeping it resumable, manually or automatically after N idle hours; pin
+  the ones that must keep running.
+- **Filter the sidebar** — narrow a long list to just what's running or what
+  needs you.
 - **Find-in-session** and **pop-out windows** for focused work.
 - **PR awareness** — a session shows a badge when it has an associated pull
   request.
@@ -72,6 +87,11 @@ Arch / CachyOS: the AppImage works as-is.
 drag Mandor to Applications. The app is **not code-signed**, so on first launch
 right-click it → **Open** (or run `xattr -cr /Applications/Mandor.app`) to get
 past Gatekeeper.
+
+**Windows** (x86_64, experimental): run `Mandor_*_x64-setup.exe`. The installer
+is **unsigned**, so SmartScreen will warn you (More info → Run anyway). This
+build is untested — it compiles and installs, but I don't run Windows; if
+sessions fail to start there, please open an issue.
 
 Mandor launches the `claude` CLI from your `PATH`, so make sure `claude` is
 installed and runnable from a terminal first.
@@ -118,6 +138,17 @@ Tauri v2 (Rust) · `portable-pty` for PTYs · vanilla JS/CSS frontend ·
   (re-encoded to mono for size).
 - Terminal rendering: [`xterm.js`](https://xtermjs.org/) (vendored in `ui/vendor/`).
 - Default terminal font: [JetBrains Mono](https://www.jetbrains.com/lp/mono/) (OFL).
+
+## This is one person's workflow — fork it
+
+Mandor is shaped end to end by how *I* work: the grouping, the defaults, the
+keyboard shortcuts, what gets a notification, what doesn't. That's the point —
+it's a tool I use, not a product trying to suit everyone.
+
+So if something here doesn't fit your style, don't wait on me: **fork it and make
+it yours.** That's the intended outcome, and the GPL-3.0 license guarantees you
+can. Issues and PRs are welcome too, but a fork that fits your day beats a
+feature request that half-fits mine.
 
 ## License
 
