@@ -1,8 +1,9 @@
 name: Release
 
 # Build the desktop bundles and attach them to the release for a pushed v* tag:
-#   Linux  → .deb, .rpm, AppImage
-#   macOS  → universal .dmg (Apple Silicon + Intel), unsigned
+#   Linux   → .deb, .rpm, AppImage
+#   macOS   → universal .dmg (Apple Silicon + Intel), unsigned
+#   Windows → NSIS .exe installer, unsigned (experimental — untested platform)
 # Also runnable manually (workflow_dispatch) to produce a test build whose
 # artifacts are saved to the run (no release touched).
 on:
@@ -113,4 +114,42 @@ jobs:
         with:
           name: mandor-macos-dmg
           path: src-tauri/target/universal-apple-darwin/release/bundle/dmg/*.dmg
+          if-no-files-found: error
+
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: oven-sh/setup-bun@v2
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Install JS dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build NSIS installer (unsigned)
+        run: bun run tauri build --bundles nsis
+
+      - name: Attach installer to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tag="${GITHUB_REF_NAME}"
+          gh release view "$tag" >/dev/null 2>&1 \
+            || gh release create "$tag" --title "$tag" --generate-notes || true
+          gh release upload "$tag" \
+            src-tauri/target/release/bundle/nsis/*-setup.exe \
+            --clobber
+
+      - name: Save installer as a run artifact (manual builds)
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/upload-artifact@v7
+        with:
+          name: mandor-windows-installer
+          path: src-tauri/target/release/bundle/nsis/*-setup.exe
           if-no-files-found: error
