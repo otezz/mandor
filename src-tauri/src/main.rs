@@ -3,6 +3,8 @@
 
 mod pty;
 mod sessions;
+mod store;
+mod webserver;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -266,12 +268,35 @@ fn restart_app(app: tauri::AppHandle, startup: tauri::State<'_, AppStartup>) {
         use std::os::unix::process::CommandExt;
         // The new process can't start while this one lives: the single-instance
         // plugin would make it hand off to this (dying) instance and exit, leaving
-        // nothing running. So the relaunch waits for this pid to disappear (bounded,
-        // ~10s) before exec'ing. Detached — own process group, no inherited stdio —
-        // so it survives this process exiting.
+        // nothing running. So the relaunch waits for this process to disappear
+        // before exec'ing. Detached — own process group, no inherited stdio — so it
+        // survives this process exiting.
+        //
+        // It must also wait for our WebKit children. The webview's localStorage —
+        // where the session list lives — is an SQLite database held open by
+        // WebKitNetworkProcess, not by us, and that child flushes pending writes as
+        // it shuts down. Starting the new instance before it finishes lets a second
+        // process open the same database mid-flush, read a stale snapshot, and
+        // persist that over the newer state: sessions silently vanish. Waiting for
+        // those pids (plus a small margin) keeps the handover ordered.
+        let pid = std::process::id();
+        let mut pids = vec![pid.to_string()];
+        if let Ok(out) = std::process::Command::new("pgrep")
+            .args(["-P", &pid.to_string(), "WebKit"])
+            .output()
+        {
+            if out.status.success() {
+                pids.extend(
+                    String::from_utf8_lossy(&out.stdout)
+                        .split_whitespace()
+                        .map(str::to_string),
+                );
+            }
+        }
         let script = format!(
-            "i=0; while kill -0 {pid} 2>/dev/null && [ $i -lt 100 ]; do sleep 0.1; i=$((i+1)); done; exec \"$0\"",
-            pid = std::process::id()
+            "i=0; for p in {pids}; do while kill -0 $p 2>/dev/null && [ $i -lt 150 ]; \
+             do sleep 0.1; i=$((i+1)); done; done; sleep 0.5; exec \"$0\"",
+            pids = pids.join(" ")
         );
         let spawned = std::process::Command::new("sh")
             .arg("-c")
@@ -496,6 +521,7 @@ fn main() {
                 .build(),
         )
         .manage(PtyState::default())
+        .manage(store::StoreState::default())
         .manage(AppStartup {
             exe: std::env::current_exe().ok(),
             start_mtime: std::env::current_exe()
@@ -504,6 +530,12 @@ fn main() {
                 .and_then(|m| m.modified().ok()),
         })
         .setup(|app| {
+            // Remote access (optional, off by default): a loopback-only HTTP+WS
+            // server serving the same ui/ frontend, reached through a tunnel the
+            // user already trusts (SSH port-forward, `tailscale serve`) — see
+            // webserver.rs. Read once at launch; toggling the setting takes
+            // effect on the next restart.
+            webserver::spawn(app.handle().clone(), store::get_remote_config());
             // Tray icon: closing the window hides to tray (sessions keep running);
             // Quit really exits (killing sessions via the ExitRequested handler).
             let show_i = MenuItem::with_id(app, "show", "Show Mandor", true, None::<&str>)?;
@@ -604,7 +636,12 @@ fn main() {
             close_pty,
             running_ptys,
             set_claude_path,
-            list_sessions
+            list_sessions,
+            store::get_store,
+            store::save_store,
+            store::get_remote_config,
+            store::save_remote_config,
+            webserver::browse_dir
         ])
         .build(tauri::generate_context!())
         .expect("error while building Mandor")

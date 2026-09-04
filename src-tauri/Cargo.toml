@@ -25,6 +25,12 @@ fontdb = "0.23"
 # Sent notifications directly (like notify-send): tauri-plugin-notification's
 # show() returns Ok on Linux but doesn't raise a banner in this environment.
 notify-rust = "4"
+axum = { version = "0.8.9", features = ["ws"] }
+tower-http = { version = "0.7.0", features = ["fs"] }
+tokio = { version = "1.53.1", features = ["sync", "rt", "macros"] }
+rust-embed = "8.12.0"
+futures-util = "0.3.34"
+mime_guess = "2.0.5"
 
 # Linux: give dev (debug) builds a distinct Wayland app-id / X11 WM_CLASS so
 # they aren't grouped with an installed release build in the taskbar.
