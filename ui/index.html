@@ -150,6 +150,24 @@
             <button id="new-session" type="button">+ New</button>
             <button id="resume-session" type="button">Resume…</button>
           </div>
+          <div class="session-search-wrap">
+            <input
+              id="session-search"
+              class="session-search"
+              type="text"
+              spellcheck="false"
+              placeholder="Search sessions…"
+            />
+            <button
+              id="session-search-clear"
+              class="session-search-clear"
+              type="button"
+              title="Clear search"
+              hidden
+            >
+              ✕
+            </button>
+          </div>
           <div id="session-filter" class="session-filter">
             <button type="button" data-filter="all" class="filter-btn active">
               All
@@ -297,6 +315,14 @@
             >
           </label>
           <label class="field-check">
+            <input id="ns-yolo" type="checkbox" />
+            <span class="danger-check"
+              >YOLO mode: skip permission prompts
+              (<code>--dangerously-skip-permissions</code>) — claude runs tools
+              without asking</span
+            >
+          </label>
+          <label class="field-check">
             <input id="ns-incognito" type="checkbox" />
             <span
               >Incognito (isolated config; transcript &amp; history not saved to
@@ -378,6 +404,29 @@
       </div>
     </div>
 
+    <div id="browse-modal" class="modal" hidden>
+      <div class="modal-backdrop" id="browse-backdrop"></div>
+      <div class="modal-box modal-form">
+        <div class="modal-header">
+          <span id="browse-title">Choose a folder</span>
+        </div>
+        <div class="ns-fields">
+          <div class="set-dir-row">
+            <span id="browse-path" class="set-dir-path">—</span>
+          </div>
+          <ul id="browse-list" class="resume-list browse-list"></ul>
+        </div>
+        <div class="modal-actions">
+          <button id="browse-cancel" class="btn-secondary" type="button">
+            Cancel
+          </button>
+          <button id="browse-select" class="btn-primary" type="button">
+            Choose this folder
+          </button>
+        </div>
+      </div>
+    </div>
+
     <div id="restart-modal" class="modal" hidden>
       <div class="modal-backdrop" id="restart-backdrop"></div>
       <div class="modal-box modal-form">
@@ -419,6 +468,14 @@
           </button>
           <button class="settings-tab" type="button" data-section="advanced">
             Advanced
+          </button>
+          <button
+            class="settings-tab"
+            type="button"
+            data-section="remote"
+            id="set-remote-tab"
+          >
+            Remote
           </button>
           <button class="settings-tab" type="button" data-section="about">
             About
@@ -519,7 +576,7 @@
           </section>
 
           <section class="settings-section" data-section="behavior" hidden>
-            <label class="set-check">
+            <label class="set-check" id="set-run-on-startup-row">
               <input id="set-run-on-startup" type="checkbox" />
               <span>Launch Mandor automatically when you log in</span>
             </label>
@@ -679,6 +736,61 @@
                 your PATH.</span
               >
             </div>
+          </section>
+
+          <section class="settings-section" data-section="remote" hidden>
+            <div class="set-hint">
+              Reach this machine's sessions from another device, through a
+              tunnel you already trust — an SSH port-forward, or
+              <code>tailscale serve</code> publishing this loopback port onto
+              your tailnet. Mandor never listens beyond
+              <code>127.0.0.1</code> itself; the tunnel is the whole security
+              boundary. <b>Changing this requires restarting Mandor.</b>
+            </div>
+            <label class="set-check">
+              <input id="set-remote-enabled" type="checkbox" />
+              <span>Allow remote access</span>
+            </label>
+            <div class="set-field">
+              <span class="set-label">Port</span>
+              <input
+                id="set-remote-port"
+                class="ns-input"
+                type="number"
+                min="1024"
+                max="65535"
+                step="1"
+              />
+            </div>
+            <label class="set-check">
+              <input id="set-remote-lan" type="checkbox" />
+              <span class="danger-check"
+                >Allow LAN access — reachable at this machine's LAN IP by
+                <i>any device on this network</i>, with no tunnel at all. Off by
+                default: only a tunnel you run yourself (SSH,
+                <code>tailscale serve</code>) can reach it. Set an access token
+                below if you turn this on.</span
+              >
+            </label>
+            <div class="set-field">
+              <span class="set-label">Access token (optional)</span>
+              <input
+                id="set-remote-token"
+                class="ns-input"
+                type="text"
+                spellcheck="false"
+                placeholder="leave blank to rely on the tunnel alone"
+              />
+              <span class="set-hint"
+                >If set, every remote request must include it as
+                <code>?token=…</code> in the URL — defense-in-depth on top of
+                the tunnel, not a replacement for it. Alphanumeric only.</span
+              >
+            </div>
+            <div id="set-remote-url" class="set-hint" hidden></div>
+            <button id="set-remote-save" class="set-ghost" type="button">
+              Save
+            </button>
           </section>
 
           <section class="settings-section" data-section="about" hidden>

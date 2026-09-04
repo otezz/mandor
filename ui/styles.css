@@ -347,6 +347,51 @@ body.maximized .window {
 }
 
 /* Session-list filter (All / Active / Attention) */
+.session-search-wrap {
+  position: relative;
+  /* margin, not padding: the wrap must exactly bound the input's own box (no
+     internal top/bottom padding) so the clear button's 50%-based centering
+     below lines up with the input's real vertical center, not the wrap's. */
+  margin: 6px 10px 0;
+}
+
+.session-search {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--fg);
+  font-size: 12px;
+  padding: 6px 26px 6px 8px;
+  outline: none;
+}
+
+.session-search:focus {
+  border-color: var(--accent);
+}
+
+.session-search-clear {
+  position: absolute;
+  top: 50%;
+  right: 6px;
+  transform: translateY(-50%);
+  width: 18px;
+  height: 18px;
+  display: grid;
+  place-items: center;
+  background: none;
+  border: none;
+  color: var(--fg-dim);
+  font-size: 10px;
+  cursor: pointer;
+  border-radius: 4px;
+}
+
+.session-search-clear:hover {
+  color: var(--fg);
+  background: var(--accent-bg);
+}
+
 .session-filter {
   display: flex;
   gap: 4px;
@@ -474,6 +519,19 @@ body.maximized .window {
   font-size: 11px;
   line-height: 1;
   opacity: 0.85;
+}
+
+/* YOLO (permission-skipping) session chip on a session pill */
+.s-yolo {
+  flex: none;
+  font-size: 10px;
+  line-height: 1;
+  color: var(--red);
+}
+
+/* Warning text for the permission-skipping toggle */
+.danger-check {
+  color: var(--red);
 }
 
 /* Exempt-from-auto-suspend chip on a session pill */
@@ -1686,6 +1744,21 @@ body.dev #new-session {
   white-space: nowrap;
 }
 
+.set-group-model {
+  flex: none;
+}
+
+.set-group-model-btn {
+  white-space: nowrap;
+}
+
+.set-group-model .ns-menu {
+  left: auto;
+  right: 0;
+  width: max-content;
+  min-width: 100%;
+}
+
 .set-ghost {
   flex: none;
   background: transparent;
@@ -1727,6 +1800,29 @@ body.dev #new-session {
 /* Pop-out window: same custom titlebar + resize grips as the main window, just
    no sidebar. The left titlebar controls (app menu, sidebar toggle) are
    main-window only, so hide those. */
+/* Remote (browser-tab) client: hide native-desktop-only affordances that don't
+   exist or can't work over the wire — the OS window controls (a browser tab
+   already has its own), the "launch at login" toggle, and switching to a
+   different profile's own window (that's a whole separate window/store, not
+   yet wired for remote — see the `IS_REMOTE` gating in app.js). `[data-section]`
+   catches both a settings tab button and the section it opens, since both
+   share the exact same attribute value. */
+body.remote .titlebar-controls,
+body.remote #set-run-on-startup-row,
+body.remote [data-section="profiles"],
+body.remote #app-menu-profiles,
+body.remote #set-bell-file-btn,
+body.remote [data-section="remote"] {
+  display: none !important;
+}
+
+.browse-list {
+  max-height: 260px;
+}
+.browse-item {
+  cursor: pointer;
+}
+
 body.popout #sidebar {
   display: none;
 }

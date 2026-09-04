@@ -1,6 +1,91 @@
-const { invoke } = window.__TAURI__.core;
-const { listen } = window.__TAURI__.event;
-const appWindow = window.__TAURI__.window.getCurrentWindow();
+// --- transport shim: the Tauri desktop webview vs. a plain remote browser ---
+// `window.__TAURI__` only exists inside the Tauri webview. When it's absent
+// (a browser tab reached through webserver.rs, over a tunnel) `invoke`/`listen`
+// are re-implemented over fetch()/WebSocket with the identical call shape, so
+// every line below this point — the whole app — is unaware which one it's on.
+const IS_REMOTE = !window.__TAURI__;
+let invoke, listen, appWindow;
+
+if (!IS_REMOTE) {
+  ({ invoke } = window.__TAURI__.core);
+  ({ listen } = window.__TAURI__.event);
+  appWindow = window.__TAURI__.window.getCurrentWindow();
+} else {
+  document.body.classList.add("remote");
+  const REMOTE_TOKEN = new URLSearchParams(location.search).get("token") || "";
+  const withToken = (path) => {
+    if (!REMOTE_TOKEN) return path;
+    return (
+      path +
+      (path.includes("?") ? "&" : "?") +
+      "token=" +
+      encodeURIComponent(REMOTE_TOKEN)
+    );
+  };
+
+  invoke = async (command, args = {}) => {
+    const res = await fetch(withToken(`/api/invoke/${command}`), {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(args ?? {}),
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      throw new Error(body.error || `${command} failed (HTTP ${res.status})`);
+    }
+    const text = await res.text();
+    return text ? JSON.parse(text) : undefined;
+  };
+
+  // One shared WebSocket fanned out to per-event-name listeners, matching
+  // Tauri's own listen(event, cb) -> Promise<UnlistenFn> shape so callers don't
+  // need to know which transport they're on. Reconnects with backoff — the
+  // tunnel (SSH/tailscale) can drop without the tab closing.
+  const remoteListeners = new Map();
+  let ws = null;
+  let wsReconnectDelay = 1000;
+  function connectRemoteWs() {
+    const proto = location.protocol === "https:" ? "wss:" : "ws:";
+    ws = new WebSocket(withToken(`${proto}//${location.host}/ws`));
+    ws.addEventListener("open", () => {
+      wsReconnectDelay = 1000;
+    });
+    ws.addEventListener("message", (ev) => {
+      let msg;
+      try {
+        msg = JSON.parse(ev.data);
+      } catch {
+        return;
+      }
+      const cbs = remoteListeners.get(msg.event);
+      if (cbs) for (const cb of cbs) cb({ payload: msg.payload });
+    });
+    ws.addEventListener("close", () => {
+      setTimeout(connectRemoteWs, wsReconnectDelay);
+      wsReconnectDelay = Math.min(wsReconnectDelay * 1.5, 15000);
+    });
+  }
+  connectRemoteWs();
+
+  listen = async (event, cb) => {
+    if (!remoteListeners.has(event)) remoteListeners.set(event, new Set());
+    remoteListeners.get(event).add(cb);
+    return () => remoteListeners.get(event)?.delete(cb);
+  };
+
+  // Native window chrome has no remote equivalent — every caller below is a
+  // desktop-only affordance (drag the titlebar, resize grips, OS focus/resize
+  // events), so these are silent no-ops rather than per-call-site IS_REMOTE
+  // checks scattered through the file.
+  appWindow = {
+    close() {},
+    startDragging() {},
+    startResizeDragging() {},
+    onResized() {},
+    onFocusChanged() {},
+    onDragDropEvent() {},
+  };
+}
 
 // A pop-out window shows a single session's terminal (?popout=1&id=…). It shares
 // the backend + localStorage with the main window, so it must NOT persist.
@@ -442,8 +527,14 @@ function parseGhosttyTheme(text) {
 // (sessions, groups, settings) is still found under this key. Profile windows
 // persist their own session list under a per-profile suffix; the default window
 // keeps the bare key.
-const STORE_KEY_BASE = "mandor-term.sidebar";
-const STORE_KEY = STORE_KEY_BASE + (PROFILE_ID ? "." + PROFILE_ID : "");
+// Per-client UI state — which session is focused, split-view layout, whether
+// the sidebar is collapsed — deliberately stays in THIS browser's own
+// localStorage rather than the shared backend store (see loadStore/persist
+// below). That's what makes "the same sessions, independent views" real: a
+// remote browser and the desktop app each have their own bucket of this, so
+// picking a different session on your phone never yanks focus on your desktop.
+const CLIENT_KEY_BASE = "mandor-term.client";
+const CLIENT_KEY = CLIENT_KEY_BASE + (PROFILE_ID ? "." + PROFILE_ID : "");
 
 // Global profile registry (shared across all windows): [{ id, name }]. Each entry
 // maps to a persistent config dir the backend owns (profiles_base/<id>).
@@ -465,6 +556,29 @@ function saveProfiles() {
   }
 }
 
+// Per-client fields only — see the CLIENT_KEY comment above.
+function persistClient() {
+  try {
+    localStorage.setItem(
+      CLIENT_KEY,
+      JSON.stringify({
+        activeId,
+        viewMode,
+        splitIds,
+        sidebarCollapsed,
+        sessionFilter,
+        ungroupedCollapsed,
+      }),
+    );
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+// Shared fields (sessions/groups/settings/recent dirs) go through the backend
+// store — get_store/save_store in store.rs — so every client attached to this
+// profile (the desktop window, any remote browser) sees the same data. Fire-
+// and-forget like every other invoke() call here: no caller awaits persist().
 function persist() {
   if (POPOUT) return; // the main window owns persistence
   const sess = sessionOrder
@@ -479,36 +593,45 @@ function persist() {
       wantRemote: !!s.wantRemote,
       suspended: !!s.suspended, // stay dormant across restart, don't auto-resume
       noSuspend: !!s.noSuspend, // stays exempt from auto-suspend across restarts
+      wantYolo: !!s.wantYolo, // keep skipping permissions when resumed later
       pr: s.pr || null,
     }));
-  try {
-    localStorage.setItem(
-      STORE_KEY,
-      JSON.stringify({
-        groups,
-        ungroupedCollapsed,
-        recentDirs,
-        sidebarCollapsed,
-        settings,
-        sessions: sess,
-        activeId,
-        viewMode,
-        splitIds,
-        sessionFilter,
-      }),
-    );
-  } catch (e) {
-    console.error(e);
-  }
+  invoke("save_store", {
+    profileId: PROFILE_ID,
+    value: { groups, recentDirs, settings, sessions: sess },
+  }).catch((e) => console.error(e));
+  persistClient();
 }
 
-function loadStore() {
+// Before the backend-owned store existed, EVERYTHING (sessions, groups,
+// settings, activeId, split layout, ...) lived in this window's own
+// localStorage under this key. On the first launch after upgrading, the new
+// backend store is empty even though a real, curated session list is sitting
+// right there — without this, upgrading would look exactly like every session
+// vanished. Migrated once: after the first successful save the backend store
+// is no longer empty, so this becomes a no-op on every later load.
+const LEGACY_STORE_KEY =
+  "mandor-term.sidebar" + (PROFILE_ID ? "." + PROFILE_ID : "");
+
+async function loadStore() {
   try {
-    const data = JSON.parse(localStorage.getItem(STORE_KEY) || "{}");
+    const client = JSON.parse(localStorage.getItem(CLIENT_KEY) || "{}");
+    savedActiveId = client.activeId ?? null;
+    savedViewMode = client.viewMode === "split" ? "split" : "single";
+    savedSplitIds = Array.isArray(client.splitIds) ? client.splitIds : [];
+    sidebarCollapsed = !!client.sidebarCollapsed;
+    sessionFilter = ["live", "attention"].includes(client.sessionFilter)
+      ? client.sessionFilter
+      : "all";
+    ungroupedCollapsed = !!client.ungroupedCollapsed;
+
+    let data = (await invoke("get_store", { profileId: PROFILE_ID })) || {};
+    if (!Array.isArray(data.sessions) || data.sessions.length === 0) {
+      const legacy = migrateLegacyStore();
+      if (legacy) data = legacy;
+    }
     groups = Array.isArray(data.groups) ? data.groups : [];
-    ungroupedCollapsed = !!data.ungroupedCollapsed;
     recentDirs = Array.isArray(data.recentDirs) ? data.recentDirs : [];
-    sidebarCollapsed = !!data.sidebarCollapsed;
     const stored =
       data.settings && typeof data.settings === "object" ? data.settings : null;
     if (stored) settings = { ...settings, ...data.settings };
@@ -525,15 +648,98 @@ function loadStore() {
     // (covers old auto/light/dark values and deleted custom themes)
     if (!getTheme(settings.theme)) settings.theme = "frappe";
     savedSessions = Array.isArray(data.sessions) ? data.sessions : [];
-    savedActiveId = data.activeId ?? null;
-    savedViewMode = data.viewMode === "split" ? "split" : "single";
-    savedSplitIds = Array.isArray(data.splitIds) ? data.splitIds : [];
-    sessionFilter = ["live", "attention"].includes(data.sessionFilter)
-      ? data.sessionFilter
-      : "all";
     loadProfiles();
   } catch (e) {
     console.error(e);
+  }
+}
+
+// Reads the pre-upgrade combined blob out of THIS window's localStorage, seeds
+// this client's own view state from it (so the upgrade doesn't also reset
+// which session was active), pushes the shared fields into the new backend
+// store, and clears the old key. Returns the shared-fields object to use
+// immediately (so this very load doesn't have to wait on a round-trip), or
+// null if there was nothing to migrate (a genuinely fresh install).
+function migrateLegacyStore() {
+  let legacy;
+  try {
+    legacy = JSON.parse(localStorage.getItem(LEGACY_STORE_KEY) || "null");
+  } catch {
+    return null;
+  }
+  if (
+    !legacy ||
+    !Array.isArray(legacy.sessions) ||
+    legacy.sessions.length === 0
+  ) {
+    return null;
+  }
+  if (savedActiveId == null && legacy.activeId != null)
+    savedActiveId = legacy.activeId;
+  if (legacy.viewMode === "split") savedViewMode = "split";
+  if (Array.isArray(legacy.splitIds) && legacy.splitIds.length) {
+    savedSplitIds = legacy.splitIds;
+  }
+  if (legacy.sidebarCollapsed != null)
+    sidebarCollapsed = !!legacy.sidebarCollapsed;
+  if (legacy.sessionFilter) sessionFilter = legacy.sessionFilter;
+  if (legacy.ungroupedCollapsed != null) {
+    ungroupedCollapsed = !!legacy.ungroupedCollapsed;
+  }
+  persistClient();
+
+  const shared = {
+    groups: legacy.groups,
+    recentDirs: legacy.recentDirs,
+    settings: legacy.settings,
+    sessions: legacy.sessions,
+  };
+  invoke("save_store", { profileId: PROFILE_ID, value: shared }).catch((e) =>
+    console.error(e),
+  );
+  localStorage.removeItem(LEGACY_STORE_KEY);
+  return shared;
+}
+
+// Applied when ANOTHER client (a remote browser, another window on this
+// profile) saves — keeps this client's sidebar in sync without a reload, while
+// leaving this client's own live terminals, focus, and split layout alone.
+// Incognito/background-agent sessions never round-trip through the shared
+// store (persist() excludes them) so they're untouched by this reconciliation.
+function reconcileSessionsFromStore(remoteList) {
+  const remoteIds = new Set(remoteList.map((r) => r.id));
+  for (const rec of remoteList) {
+    const s = sessions.get(rec.id);
+    if (!s) {
+      // A session created/resumed elsewhere — add it here as a cold pill; this
+      // client materializes it (spawns claude) only if the user opens it.
+      addSession({ ...rec, spawnMode: "resume", live: false });
+      continue;
+    }
+    // Merge fields that can change elsewhere without disturbing this client's
+    // own runtime state (term/fit/el/live/working/lastActivityMs/...).
+    s.name = rec.name || s.name;
+    s.groupId = rec.groupId ?? null;
+    s.wantRemote = !!rec.wantRemote;
+    s.noSuspend = !!rec.noSuspend;
+    s.wantYolo = !!rec.wantYolo;
+    s.pr = rec.pr || s.pr || null;
+    // A session suspended on ANOTHER client has no PTY anywhere — reflect that
+    // here too, but never wake a session THIS client currently has live.
+    if (rec.suspended && !s.live) s.suspended = true;
+  }
+  for (const id of [...sessionOrder]) {
+    const s = sessions.get(id);
+    if (!s || s.incognito || s.agents) continue; // never shared, never pruned here
+    if (remoteIds.has(id)) continue;
+    // Closed on another client — drop it here too (its claude is already gone).
+    if (s.term) s.term.dispose();
+    if (s.el) s.el.remove();
+    sessions.delete(id);
+    const oi = sessionOrder.indexOf(id);
+    if (oi !== -1) sessionOrder.splice(oi, 1);
+    dropFromSplit(id);
+    if (activeId === id) activeId = pickNextActive(id);
   }
 }
 
@@ -577,6 +783,7 @@ function createGroup(name = "New group", dir = null) {
     name: uniqueGroupName(name),
     collapsed: false,
     dir,
+    model: null, // "" = claude's own default; null = fall back to settings.defaultModel
   };
   groups.push(g);
   persist();
@@ -609,42 +816,127 @@ function moveSession(id, groupId) {
   renderSessionList();
 }
 
-async function setGroupDir(g) {
-  try {
-    const dir = await invoke("plugin:dialog|open", {
-      options: {
-        directory: true,
-        title: `Auto-add sessions started under… (for "${g.name}")`,
-        defaultPath: g.dir || undefined,
-      },
-    });
-    if (dir) {
-      g.dir = typeof dir === "string" ? dir : dir?.path;
-      persist();
-      renderSessionList();
+// Choose a folder: the native OS dialog on desktop, or a small server-backed
+// browser modal remotely (there is no native file dialog in a browser tab, and
+// the folder being chosen lives on the machine running Mandor, not the client's
+// own device, so a client-side <input type=file> picker wouldn't even point at
+// the right filesystem). Both resolve to a plain path string, or null if
+// cancelled — callers don't need to know which one ran.
+const browseModal = document.getElementById("browse-modal");
+const browseTitle = document.getElementById("browse-title");
+const browsePathEl = document.getElementById("browse-path");
+const browseList = document.getElementById("browse-list");
+let browseResolve = null;
+let browseCurrentPath = null;
+
+async function pickFolder({ title, defaultPath } = {}) {
+  if (!IS_REMOTE) {
+    try {
+      const dir = await invoke("plugin:dialog|open", {
+        options: {
+          directory: true,
+          title,
+          defaultPath: defaultPath || undefined,
+        },
+      });
+      return dir ? (typeof dir === "string" ? dir : dir?.path) : null;
+    } catch {
+      return null; // cancelled
     }
-  } catch {
-    /* cancelled */
+  }
+  browseTitle.textContent = title || "Choose a folder";
+  browseModal.hidden = false;
+  await loadBrowseDir(defaultPath || null);
+  return new Promise((resolve) => {
+    browseResolve = resolve;
+  });
+}
+
+async function loadBrowseDir(path) {
+  try {
+    const res = await invoke("browse_dir", { path });
+    browseCurrentPath = res.path;
+    browsePathEl.textContent = res.path;
+    browseList.replaceChildren();
+    if (res.parent) {
+      const up = document.createElement("li");
+      up.className = "resume-item browse-item";
+      up.textContent = "⬆ ..";
+      up.addEventListener("click", () => loadBrowseDir(res.parent));
+      browseList.appendChild(up);
+    }
+    for (const entry of res.entries) {
+      const li = document.createElement("li");
+      li.className = "resume-item browse-item";
+      li.textContent = "📁 " + entry.name;
+      li.addEventListener("click", () => loadBrowseDir(entry.path));
+      browseList.appendChild(li);
+    }
+  } catch (e) {
+    console.error(e);
+  }
+}
+
+function closeBrowseModal(result) {
+  browseModal.hidden = true;
+  const resolve = browseResolve;
+  browseResolve = null;
+  if (resolve) resolve(result);
+}
+document
+  .getElementById("browse-cancel")
+  .addEventListener("click", () => closeBrowseModal(null));
+document
+  .getElementById("browse-backdrop")
+  .addEventListener("click", () => closeBrowseModal(null));
+document
+  .getElementById("browse-select")
+  .addEventListener("click", () => closeBrowseModal(browseCurrentPath));
+
+async function setGroupDir(g) {
+  const dir = await pickFolder({
+    title: `Auto-add sessions started under… (for "${g.name}")`,
+    defaultPath: g.dir,
+  });
+  if (dir) {
+    g.dir = dir;
+    persist();
+    renderSessionList();
   }
 }
 
 // --- sidebar rendering ---
 // Sidebar filter: "all", "live" (a claude is running), or "attention" (finished a
-// turn / waiting). When filtering, matches are shown regardless of group collapse
-// so the filter reveals them, and groups with no matches are hidden.
+// turn / waiting), combined (AND) with a free-text search box matching name/cwd.
+// Ephemeral — not persisted, like any other search field — so it resets on
+// restart rather than lingering as "why is my sidebar empty" the next launch.
+// When filtering, matches are shown regardless of group collapse so the filter
+// reveals them, and groups with no matches are hidden.
+let sessionSearch = "";
+
 function passesFilter(s) {
   if (!s) return false;
-  if (sessionFilter === "live") return !!s.live;
-  if (sessionFilter === "attention") return !!s.attention;
+  if (sessionFilter === "live" && !s.live) return false;
+  if (sessionFilter === "attention" && !s.attention) return false;
+  const q = sessionSearch.trim().toLowerCase();
+  if (
+    q &&
+    !(s.name || "").toLowerCase().includes(q) &&
+    !(s.cwd || "").toLowerCase().includes(q)
+  ) {
+    return false;
+  }
   return true;
 }
 
 function renderSessionList() {
   listEl.replaceChildren();
-  const filtering = sessionFilter !== "all";
+  const filtering = sessionFilter !== "all" || sessionSearch.trim() !== "";
   const grouped = groups.length > 0;
   const claimed = new Set();
-  let shown = 0;
+  let totalMatches = 0; // matches anywhere, even inside a collapsed group — for
+  // the empty-state check below, so it doesn't fire just because matches
+  // happen to be tucked behind a collapsed header rather than genuinely absent.
 
   for (const g of groups) {
     const members = sessionOrder.filter(
@@ -654,13 +946,16 @@ function renderSessionList() {
     const vis = filtering
       ? members.filter((id) => passesFilter(sessions.get(id)))
       : members;
+    totalMatches += vis.length;
     if (filtering && vis.length === 0) continue; // hide groups with no matches
-    listEl.appendChild(buildGroupHeader(g));
-    if (filtering || !g.collapsed) {
-      for (const id of vis) {
-        listEl.appendChild(buildRow(sessions.get(id)));
-        shown++;
-      }
+    listEl.appendChild(buildGroupHeader(g, filtering ? vis.length : undefined));
+    // The collapsed state is always respected, filtering or not — a collapsed
+    // group with matches still shows its (filtered) count on the header above,
+    // so matches aren't invisible, but the toggle itself must keep working the
+    // same way in every mode (it used to force every group open while
+    // filtering, which made the collapse/expand caret look broken).
+    if (!g.collapsed) {
+      for (const id of vis) listEl.appendChild(buildRow(sessions.get(id)));
     }
   }
 
@@ -670,27 +965,28 @@ function renderSessionList() {
   const visUngrouped = filtering
     ? ungrouped.filter((id) => passesFilter(sessions.get(id)))
     : ungrouped;
+  totalMatches += visUngrouped.length;
   if (grouped && (!filtering || visUngrouped.length))
     listEl.appendChild(buildUngroupedHeader(visUngrouped.length));
-  if (!grouped || !ungroupedCollapsed || filtering) {
-    for (const id of visUngrouped) {
+  if (!grouped || !ungroupedCollapsed) {
+    for (const id of visUngrouped)
       listEl.appendChild(buildRow(sessions.get(id)));
-      shown++;
-    }
   }
 
-  if (filtering && shown === 0) {
+  if (filtering && totalMatches === 0) {
     const hint = document.createElement("div");
     hint.className = "filter-empty";
-    hint.textContent =
-      sessionFilter === "live"
+    const q = sessionSearch.trim();
+    hint.textContent = q
+      ? `No sessions match “${q}”.`
+      : sessionFilter === "live"
         ? "No running sessions."
         : "Nothing needs attention.";
     listEl.appendChild(hint);
   }
 }
 
-function buildGroupHeader(g) {
+function buildGroupHeader(g, count) {
   const header = document.createElement("div");
   header.className = "group-header";
   header.dataset.group = g.id;
@@ -702,12 +998,12 @@ function buildGroupHeader(g) {
   name.className = "group-name";
   name.textContent = g.name;
   if (g.dir) name.title = `auto-adds sessions under ${g.dir}`;
-  const count = document.createElement("span");
-  count.className = "group-count";
-  count.textContent = String(
-    [...sessions.values()].filter((s) => s.groupId === g.id).length,
+  const countEl = document.createElement("span");
+  countEl.className = "group-count";
+  countEl.textContent = String(
+    count ?? [...sessions.values()].filter((s) => s.groupId === g.id).length,
   );
-  header.append(caret, name, count);
+  header.append(caret, name, countEl);
 
   header.addEventListener("click", () => {
     if (justDragged || name.isContentEditable) return;
@@ -785,6 +1081,13 @@ function buildRow(s) {
     inc.textContent = "🕶";
     inc.title = "Incognito — isolated config dir, nothing saved to disk";
     row.append(inc);
+  }
+  if (s.wantYolo) {
+    const y = document.createElement("span");
+    y.className = "s-yolo";
+    y.textContent = "⚡";
+    y.title = "YOLO mode — runs tools without asking for permission";
+    row.append(y);
   }
   if (s.noSuspend) {
     const pin = document.createElement("span");
@@ -1137,7 +1440,9 @@ function openContextMenu(e, kind, id) {
         if (el) startRenameSession(s, el);
       },
     });
-    items.push({ label: "Open in new window", run: () => popOutSession(id) });
+    if (!IS_REMOTE) {
+      items.push({ label: "Open in new window", run: () => popOutSession(id) });
+    }
     if (s.live) {
       // Resume can't pass --remote-control (the CLI would fail reconnecting to a
       // dead registration), so enable it in-session — a fresh registration.
@@ -1153,6 +1458,17 @@ function openContextMenu(e, kind, id) {
       items.push({
         label: "Suspend (free memory)",
         run: () => suspendSession(id),
+      });
+    }
+    if (!s.agents) {
+      items.push({
+        label: "YOLO mode (skip permissions)",
+        current: !!s.wantYolo,
+        run: () => toggleYolo(id),
+      });
+      items.push({
+        label: s.live ? "Restart session" : "Start session",
+        run: () => restartSession(id),
       });
     }
     if (!s.agents && !s.incognito) {
@@ -1326,6 +1642,7 @@ function addSession(rec) {
     live: !!rec.live, // a PTY is running for this session
     suspended: !!rec.suspended, // memory freed; dormant until resumed (shows 💤)
     noSuspend: !!rec.noSuspend, // exempt from idle auto-suspend (shows 📌)
+    wantYolo: !!rec.wantYolo, // --dangerously-skip-permissions on every spawn
     exited: false,
     term: null,
     fit: null,
@@ -1832,6 +2149,13 @@ function appInForeground() {
 }
 
 function notifyAttention(s) {
+  // Every attached client (desktop + any remote browser) independently detects
+  // the same session going idle from the same PTY output, so without this only
+  // the local desktop fires the actual OS notification — otherwise a remote
+  // browser would trigger a second native notification popup on the machine
+  // Mandor runs on. The desktop client's own dot/badge/sound are unaffected;
+  // this only gates the `notify` side effect.
+  if (IS_REMOTE) return;
   if (notificationsEnabled && !appInForeground()) {
     invoke("notify", {
       title: s.name,
@@ -1862,6 +2186,7 @@ async function spawnSession(s) {
     incognito: !!s.incognito,
     profileId: PROFILE_ID, // this window's profile (null = default ~/.claude)
     agents: !!s.agents, // runs `claude agents` instead of a session
+    yolo: !!s.wantYolo, // skip permission prompts (fresh or resumed)
   };
   if (s.agents) {
     // Background-agent manager — no session id / resume; leave the session flags off.
@@ -2153,6 +2478,7 @@ function startSession(cwd, opts = {}) {
     wantRemote:
       "remoteControl" in opts ? opts.remoteControl : settings.remoteByDefault,
     incognito: !!opts.incognito,
+    wantYolo: !!opts.yolo,
     live: false,
   });
   addRecentDir(cwd);
@@ -2286,6 +2612,41 @@ function toggleNoSuspend(id) {
   persist();
 }
 
+// Toggle YOLO (--dangerously-skip-permissions) for a session. It takes effect on
+// the next spawn, so a live session needs "Restart session" to pick it up — the
+// toggle deliberately doesn't kill a running claude behind your back.
+function toggleYolo(id) {
+  const s = sessions.get(id);
+  if (!s) return;
+  s.wantYolo = !s.wantYolo;
+  renderSessionList();
+  persist();
+}
+
+// Restart a session in place: stop its claude and immediately resume the same
+// conversation, so changed flags (YOLO) take effect without losing history.
+async function restartSession(id) {
+  const s = sessions.get(id);
+  if (!s || s.agents) return;
+  if (s.live) {
+    s.suspending = true; // an intentional close, not a crash
+    try {
+      await invoke("close_pty", { id });
+    } catch (e) {
+      console.error(e);
+    }
+    s.live = false;
+    // Let the old process's pty-exit land while it's still flagged as intentional,
+    // so the session isn't marked exited just as we respawn it.
+    await sleep(200);
+  }
+  if (!s.term) attachTerminal(s);
+  else s.term.reset(); // resume replays the transcript; don't stack it on old output
+  await spawnSession(s); // clears suspending/suspended, spawns with current flags
+  renderSessionList();
+  persist();
+}
+
 // Suspend a session: kill its live `claude` (reclaiming ~250 MB) but keep it as a
 // cold, resumable entry in the sidebar. Clicking it re-materializes via --resume,
 // exactly like a session restored after a restart — the conversation history
@@ -2380,7 +2741,7 @@ async function resumeAllOnStart() {
 // On launch: reconnect to PTYs that survived a webview reload, and restore
 // persisted sessions from a full restart as cold entries (resumed on click).
 async function restore() {
-  loadStore();
+  await loadStore();
   applySidebarCollapsed();
   updateFilterButtons();
   applySettings();
@@ -2514,6 +2875,34 @@ listen("pty-exit", ({ payload }) => {
   if (s.term) s.term.write("\r\n\x1b[90m[claude exited]\x1b[0m\r\n");
 });
 
+// Another client on this same profile (a remote browser, another window)
+// saved a change — pick it up here too. Skipped in POPOUT (it doesn't own a
+// session list) and for a different profile's update.
+if (!POPOUT) {
+  listen("store-update", ({ payload }) => {
+    if ((payload.profileId || null) !== (PROFILE_ID || null)) return;
+    const data = payload.value || {};
+    if (Array.isArray(data.groups)) groups = data.groups;
+    if (Array.isArray(data.recentDirs)) recentDirs = data.recentDirs;
+    if (data.settings && typeof data.settings === "object") {
+      // Every persist() (including this client's own — the emit isn't
+      // self-excluded) resends the full settings blob; applySettings() redoes
+      // real work (retheme every terminal, redecode the bell, an invoke call),
+      // so only run it when something actually changed.
+      const changed =
+        JSON.stringify(data.settings) !== JSON.stringify(settings);
+      settings = { ...settings, ...data.settings };
+      if (changed) applySettings();
+    }
+    reconcileSessionsFromStore(
+      Array.isArray(data.sessions) ? data.sessions : [],
+    );
+    renderView();
+    renderSessionList();
+    updateAttentionIndicator();
+  });
+}
+
 const resizeObserver = new ResizeObserver(() => {
   for (const sid of visibleIds()) {
     const s = sessions.get(sid);
@@ -2540,6 +2929,7 @@ const nsName = document.getElementById("ns-name");
 const nsWorktree = document.getElementById("ns-worktree");
 const nsRemote = document.getElementById("ns-remote");
 const nsIncognito = document.getElementById("ns-incognito");
+const nsYolo = document.getElementById("ns-yolo");
 // Incognito shouldn't broadcast to the Claude app by default — turning it on
 // clears remote control; turning it off restores the configured default. Either
 // way the user can still toggle remote control manually afterward.
@@ -2560,6 +2950,7 @@ let nsSessions = []; // all resumable sessions, filtered by the picked folder
 let nsSessionsLoaded = false;
 const MODEL_OPTIONS = [
   { value: "", label: "Default" },
+  { value: "fable", label: "Fable" },
   { value: "opus", label: "Opus" },
   { value: "sonnet", label: "Sonnet" },
   { value: "haiku", label: "Haiku" },
@@ -2726,19 +3117,11 @@ function renderNsExisting() {
 nsExistingFilter.addEventListener("input", renderNsExisting);
 
 async function browseCwd() {
-  try {
-    const dir = await invoke("plugin:dialog|open", {
-      options: {
-        directory: true,
-        multiple: false,
-        title: "Choose a folder…",
-        defaultPath: newSessionCwd || recentDirs[0] || undefined,
-      },
-    });
-    if (dir) selectCwd(typeof dir === "string" ? dir : dir.path);
-  } catch (e) {
-    console.error(e);
-  }
+  const dir = await pickFolder({
+    title: "Choose a folder…",
+    defaultPath: newSessionCwd || recentDirs[0],
+  });
+  if (dir) selectCwd(dir);
 }
 
 function buildCwdMenu() {
@@ -2819,11 +3202,15 @@ function openNewSession(presetGroupId = null) {
   const g = presetGroupId && groups.find((x) => x.id === presetGroupId);
   newSessionGroup = presetGroupId || "";
   newSessionCwd = (g && g.dir) || settings.defaultCwd || "";
-  newSessionModel = settings.defaultModel || "";
+  // A group's model can be explicitly "Default" (""), which must still win over
+  // the global default — so this checks "configured at all" (?? / null), not
+  // truthiness (|| would treat the group's own explicit "" as unconfigured).
+  newSessionModel = (g ? g.model : null) ?? settings.defaultModel ?? "";
   nsNameEdited = false;
   nsWorktree.checked = false;
   nsRemote.checked = !!settings.remoteByDefault;
   nsIncognito.checked = false;
+  nsYolo.checked = false; // never sticky: opting out of permissions is deliberate
   setCwdLabel();
   setGroupLabel();
   setModelLabel();
@@ -2863,6 +3250,7 @@ async function createFromModal() {
   const model = newSessionModel;
   const remoteControl = nsRemote.checked;
   const incognito = nsIncognito.checked;
+  const yolo = nsYolo.checked;
   closeNewModal();
   startSession(cwd, {
     name,
@@ -2871,6 +3259,7 @@ async function createFromModal() {
     model,
     remoteControl,
     incognito,
+    yolo,
   });
 }
 
@@ -3083,6 +3472,7 @@ document.addEventListener("click", () => {
   appMenu.hidden = true;
   closeContextMenu();
   closeNsMenus();
+  closeGroupModelMenus();
   setThemeMenu.hidden = true;
   setFontMenu.hidden = true;
   if (!POPOUT) attentionMenu.hidden = true;
@@ -3246,6 +3636,26 @@ function setSessionFilter(f) {
 }
 for (const b of document.querySelectorAll("#session-filter .filter-btn"))
   b.addEventListener("click", () => setSessionFilter(b.dataset.filter));
+
+const sessionSearchInput = document.getElementById("session-search");
+const sessionSearchClear = document.getElementById("session-search-clear");
+sessionSearchInput.addEventListener("input", () => {
+  sessionSearch = sessionSearchInput.value;
+  sessionSearchClear.hidden = !sessionSearch;
+  renderSessionList();
+});
+sessionSearchInput.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && sessionSearch) {
+    e.stopPropagation(); // don't also fall through to the global Escape handler
+    sessionSearchInput.value = "";
+    sessionSearchInput.dispatchEvent(new Event("input"));
+  }
+});
+sessionSearchClear.addEventListener("click", () => {
+  sessionSearchInput.value = "";
+  sessionSearchInput.focus();
+  sessionSearchInput.dispatchEvent(new Event("input"));
+});
 let IS_DEV = false;
 invoke("is_dev").then((dev) => {
   IS_DEV = !!dev;
@@ -3654,6 +4064,15 @@ function ghostBtn(label, onClick) {
   return b;
 }
 
+// Only one per-group model dropdown (see renderSettingsGroups) is open at a
+// time — mirrors the existing "one menu open" convention used for the app
+// menu / context menus / New Session dropdowns.
+let openGroupModelMenu = null;
+function closeGroupModelMenus() {
+  if (openGroupModelMenu) openGroupModelMenu.hidden = true;
+  openGroupModelMenu = null;
+}
+
 function renderSettingsGroups() {
   const box = document.getElementById("set-groups");
   box.replaceChildren();
@@ -3688,9 +4107,52 @@ function renderSettingsGroups() {
       textContent: g.dir || "— no folder —",
       title: g.dir || "",
     });
+    // A custom dropdown (not a native <select>) — WebKit renders a <select>'s
+    // open option list with native GTK popup styling that CSS can't reach, so
+    // it always looks broken against a dark theme. This reuses the same
+    // .ns-menu component the New Session modal's own model picker already
+    // uses, so it's guaranteed theme-consistent.
+    const modelWrap = document.createElement("div");
+    modelWrap.className = "ns-dropdown set-group-model";
+    const modelBtn = document.createElement("button");
+    modelBtn.type = "button";
+    modelBtn.className = "set-ghost set-group-model-btn";
+    modelBtn.title = "Default model for new sessions in this group";
+    const modelMenu = document.createElement("div");
+    modelMenu.className = "ns-menu";
+    modelMenu.hidden = true;
+    // Both an unconfigured group (model == null) and one explicitly set to
+    // "Default" show the same label — they only differ in whether they still
+    // track the global default model as it changes; see openNewSession's ??
+    // chain for the actual precedence.
+    modelBtn.textContent = modelLabelFor(g.model) + " ▾";
+    for (const o of MODEL_OPTIONS) {
+      const item = document.createElement("button");
+      item.type = "button";
+      item.className =
+        "ns-menu-item" + ((g.model ?? "") === o.value ? " current" : "");
+      item.textContent = o.label;
+      item.addEventListener("click", (e) => {
+        e.stopPropagation();
+        g.model = o.value;
+        persist();
+        closeGroupModelMenus();
+        renderSettingsGroups();
+      });
+      modelMenu.appendChild(item);
+    }
+    modelBtn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const opening = modelMenu.hidden;
+      closeGroupModelMenus();
+      modelMenu.hidden = !opening;
+      if (!modelMenu.hidden) openGroupModelMenu = modelMenu;
+    });
+    modelWrap.append(modelBtn, modelMenu);
     row.append(
       name,
       dir,
+      modelWrap,
       ghostBtn(g.dir ? "Change" : "Set folder", async () => {
         await setGroupDir(g);
         renderSettingsGroups();
@@ -3858,8 +4320,56 @@ function openSettings() {
       document.getElementById("about-desc").textContent = info.description;
     })
     .catch(() => {});
+  loadRemoteSettings();
   settingsModal.hidden = false;
 }
+
+// Remote-access config is a property of the whole running app process (one
+// HTTP server for however many windows are open), not of any one profile — so
+// unlike everything else in Settings it's only shown in the main window, and
+// (being a bound network listener) only takes effect on the next restart.
+function loadRemoteSettings() {
+  if (PROFILE_ID || POPOUT || IS_REMOTE) return;
+  invoke("get_remote_config")
+    .then((cfg) => {
+      document.getElementById("set-remote-enabled").checked = !!cfg.enabled;
+      document.getElementById("set-remote-port").value = cfg.port || 7420;
+      document.getElementById("set-remote-lan").checked = !!cfg.bindLan;
+      document.getElementById("set-remote-token").value = cfg.token || "";
+      const urlEl = document.getElementById("set-remote-url");
+      if (cfg.enabled) {
+        const tokenQs = cfg.token
+          ? `?token=${encodeURIComponent(cfg.token)}`
+          : "";
+        urlEl.textContent = cfg.bindLan
+          ? `On this LAN: http://<this machine's LAN IP>:${cfg.port}${tokenQs} — reachable by any device on the network, no tunnel needed.`
+          : `Locally: http://127.0.0.1:${cfg.port}${tokenQs} — publish this loopback port with your tunnel of choice (SSH -L, tailscale serve, …) to reach it elsewhere.`;
+        urlEl.hidden = false;
+      } else {
+        urlEl.hidden = true;
+      }
+    })
+    .catch(() => {});
+}
+document.getElementById("set-remote-save").addEventListener("click", () => {
+  const enabled = document.getElementById("set-remote-enabled").checked;
+  const port =
+    parseInt(document.getElementById("set-remote-port").value, 10) || 7420;
+  const bindLan = document.getElementById("set-remote-lan").checked;
+  const token = document.getElementById("set-remote-token").value.trim();
+  if (bindLan && !token) {
+    const proceed = confirm(
+      "LAN access with no token means anyone on this network can open your sessions. Save anyway?",
+    );
+    if (!proceed) return;
+  }
+  invoke("save_remote_config", { config: { enabled, port, bindLan, token } })
+    .then(() => {
+      loadRemoteSettings();
+      alert("Saved — restart Mandor for this to take effect.");
+    })
+    .catch((e) => alert(String(e)));
+});
 
 function closeSettings() {
   settingsModal.hidden = true;
@@ -3988,21 +4498,14 @@ document.getElementById("set-fontsize").addEventListener("change", (e) => {
 document
   .getElementById("set-defcwd-btn")
   .addEventListener("click", async () => {
-    try {
-      const dir = await invoke("plugin:dialog|open", {
-        options: {
-          directory: true,
-          title: "Default directory for new sessions",
-          defaultPath: settings.defaultCwd || undefined,
-        },
-      });
-      if (dir) {
-        settings.defaultCwd = typeof dir === "string" ? dir : dir.path;
-        setDefCwdLabelText();
-        persist();
-      }
-    } catch (e) {
-      console.error(e);
+    const dir = await pickFolder({
+      title: "Default directory for new sessions",
+      defaultPath: settings.defaultCwd,
+    });
+    if (dir) {
+      settings.defaultCwd = dir;
+      setDefCwdLabelText();
+      persist();
     }
   });
 document.getElementById("set-defcwd-clear").addEventListener("click", () => {
