@@ -324,12 +324,14 @@ fn slugify(name: &str) -> String {
 /// - `name`: display name recorded in claude's metadata (`-n`), so it shows in
 ///   `/resume` and the desktop app — only for fresh sessions (resume keeps the
 ///   name claude already stored).
+/// - `yolo`: run with `--dangerously-skip-permissions`, so claude executes tools
+///   without asking. Applies to fresh and resumed sessions alike.
 /// - `worktree`: let claude create a git worktree for the session (`-w [name]`),
 ///   named after the session. This is claude's own feature — no git plumbing here.
 /// - `session_id`: force claude's session id (`--session-id <uuid>`) so our PTY
 ///   handle id equals the claude session id — lets us `--resume` it after a full
 ///   app restart. Only for fresh sessions; mutually exclusive with `resume`.
-/// - `model`: model alias/name (`--model <m>`), e.g. "opus"/"sonnet"/"haiku".
+/// - `model`: model alias/name (`--model <m>`), e.g. "fable"/"opus"/"sonnet".
 /// - `remote_control`: register with the Claude app for phone/web access
 ///   (`--remote-control`). Only pass this for FRESH sessions — combined with
 ///   `--resume` the CLI tries to reattach to the prior (dead) registration and
@@ -352,6 +354,7 @@ pub fn open_pty(
     incognito: bool,
     profile_id: Option<String>,
     agents: bool,
+    yolo: bool,
 ) -> Result<(), String> {
     let pair = native_pty_system()
         .openpty(PtySize {
@@ -435,6 +438,10 @@ pub fn open_pty(
         }
         if remote_control {
             cmd.arg("--remote-control");
+        }
+        // Opt-in per session: claude runs tools without asking for permission.
+        if yolo {
+            cmd.arg("--dangerously-skip-permissions");
         }
         if let Some(sid) = &session_id {
             cmd.arg("--session-id");
