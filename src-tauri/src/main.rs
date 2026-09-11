@@ -466,6 +466,38 @@ fn open_profile_window(app: tauri::AppHandle, id: String, name: String) -> Resul
     Ok(())
 }
 
+/// Best-effort check for whether this process was launched by GNOME's autostart
+/// handling rather than a user action (app grid, tray, second instance).
+/// DESKTOP_AUTOSTART_ID (the freedesktop autostart-launch marker) isn't set by
+/// this GNOME version, but it does record who requested the launch in our own
+/// transient systemd scope's Description — visible in `journalctl` as
+/// "Application launched by gnome-session-service" (autostart) vs "...by
+/// gnome-shell" (a manual launch) — so read that back instead of guessing.
+#[cfg(target_os = "linux")]
+fn launched_by_gnome_autostart() -> bool {
+    let cgroup = match std::fs::read_to_string("/proc/self/cgroup") {
+        Ok(s) => s,
+        Err(_) => return false,
+    };
+    let scope = cgroup.lines().find_map(|line| {
+        let seg = line.rsplit('/').next()?;
+        seg.ends_with(".scope").then(|| seg.to_string())
+    });
+    let Some(scope) = scope else {
+        return false;
+    };
+    std::process::Command::new("systemctl")
+        .args(["--user", "show", &scope, "-p", "Description", "--value"])
+        .output()
+        .map(|o| String::from_utf8_lossy(&o.stdout).contains("gnome-session-service"))
+        .unwrap_or(false)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn launched_by_gnome_autostart() -> bool {
+    false
+}
+
 /// Reveal and focus the main window (from the tray or a second-instance launch).
 fn show_main(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
@@ -476,6 +508,16 @@ fn show_main(app: &tauri::AppHandle) {
 }
 
 fn main() {
+    // WebKitGTK's Wayland DMA-BUF renderer can attach a stale SHM buffer to a
+    // surface already bound to wp_linux_drm_syncobj_surface_v1 (explicit sync),
+    // which is a protocol violation — the compositor kills the connection with
+    // "Error 71 (Protocol error) dispatching to Wayland display" before any
+    // window appears. Confirmed via WAYLAND_DEBUG=1: "Explicit Sync only
+    // supported on dmabuf buffers". Seen on NVIDIA, whose explicit-sync/dmabuf
+    // support under WebKitGTK is still immature. Force the stable SHM renderer.
+    #[cfg(target_os = "linux")]
+    std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+
     #[cfg(unix)]
     ensure_tools_on_path();
 
@@ -584,7 +626,22 @@ fn main() {
                         | StateFlags::FULLSCREEN,
                 );
                 let _ = win.show();
-                let _ = win.set_focus();
+                if launched_by_gnome_autostart() {
+                    // Let the webview map and run its JS (sessions reconnect
+                    // there) once, then hide back to tray without ever
+                    // stealing focus — same end state as a user opening and
+                    // immediately hiding the window themselves.
+                    let w = win.clone();
+                    let handle = win.app_handle().clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(300));
+                        let _ = handle.run_on_main_thread(move || {
+                            let _ = w.hide();
+                        });
+                    });
+                } else {
+                    let _ = win.set_focus();
+                }
 
                 let win_hide = win.clone();
                 let notified = Arc::new(AtomicBool::new(false));
