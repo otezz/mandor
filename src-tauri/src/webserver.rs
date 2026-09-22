@@ -222,6 +222,15 @@ async fn dispatch(app: &AppHandle, command: &str, args: Value) -> Result<Value, 
                 req_str(&args, "id")?,
                 num_u16(&args, "cols")?,
                 num_u16(&args, "rows")?,
+                req_str(&args, "clientId")?,
+            )?;
+            Ok(Value::Null)
+        }
+        "claim_control" => {
+            pty::claim_control(
+                pty_state,
+                req_str(&args, "id")?,
+                req_str(&args, "clientId")?,
             )?;
             Ok(Value::Null)
         }

@@ -6,6 +6,22 @@
 const IS_REMOTE = !window.__TAURI__;
 let invoke, listen, appWindow;
 
+// crypto.randomUUID() needs a secure context (https:, or localhost/127.0.0.1) —
+// exactly what a remote browser reached over plain http on a LAN/Tailscale IP
+// is NOT. It's undefined there, and since several call sites use this at
+// module load (before any try/catch could help), an uncaught TypeError there
+// silently kills the rest of this script — the whole app, not just one
+// feature. Not security-sensitive here (session/client ids), so a
+// Math.random()-based v4 UUID is a fine fallback.
+function newId() {
+  if (crypto.randomUUID) return crypto.randomUUID();
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    const v = c === "x" ? r : (r & 0x3) | 0x8;
+    return v.toString(16);
+  });
+}
+
 if (!IS_REMOTE) {
   ({ invoke } = window.__TAURI__.core);
   ({ listen } = window.__TAURI__.event);
@@ -126,6 +142,9 @@ let savedActiveId = null; // the session that was active last, restored on launc
 let recentDirs = []; // recently-used session directories, most recent first
 let sidebarCollapsed = false;
 let sessionFilter = "all"; // sidebar filter: "all" | "live" | "attention"
+// Per-client (like activeId/viewMode above): a remote browser tab and the
+// desktop app may each want this on/off independently.
+let copyOnSelect = false;
 let appFocused = true;
 let notificationsEnabled = true;
 let settings = {
@@ -536,6 +555,29 @@ function parseGhosttyTheme(text) {
 const CLIENT_KEY_BASE = "mandor-term.client";
 const CLIENT_KEY = CLIENT_KEY_BASE + (PROFILE_ID ? "." + PROFILE_ID : "");
 
+// A stable per-browser id, separate from CLIENT_KEY's UI-state blob above —
+// arbitrates which client's window size drives a shared session's actual PTY
+// dimensions (see resize_pty/claim_control on the backend): the first client to
+// resize a session claims it, and stays the sole driver until another client
+// explicitly "takes over" via the session's context menu. Naturally distinct
+// between the desktop app and any remote browser (separate localStorage
+// origins), and stable across reloads of the same one.
+const CLIENT_ID_KEY =
+  "mandor-term.client-id" + (PROFILE_ID ? "." + PROFILE_ID : "");
+function loadOrCreateClientId() {
+  try {
+    let id = localStorage.getItem(CLIENT_ID_KEY);
+    if (!id) {
+      id = newId();
+      localStorage.setItem(CLIENT_ID_KEY, id);
+    }
+    return id;
+  } catch {
+    return newId(); // storage unavailable — still usable this session
+  }
+}
+const CLIENT_ID = loadOrCreateClientId();
+
 // Global profile registry (shared across all windows): [{ id, name }]. Each entry
 // maps to a persistent config dir the backend owns (profiles_base/<id>).
 const PROFILES_KEY = "mandor-term.profiles";
@@ -568,6 +610,7 @@ function persistClient() {
         sidebarCollapsed,
         sessionFilter,
         ungroupedCollapsed,
+        copyOnSelect,
       }),
     );
   } catch (e) {
@@ -624,6 +667,7 @@ async function loadStore() {
       ? client.sessionFilter
       : "all";
     ungroupedCollapsed = !!client.ungroupedCollapsed;
+    copyOnSelect = !!client.copyOnSelect;
 
     let data = (await invoke("get_store", { profileId: PROFILE_ID })) || {};
     if (!Array.isArray(data.sessions) || data.sessions.length === 0) {
@@ -779,11 +823,12 @@ function uniqueGroupName(base) {
 
 function createGroup(name = "New group", dir = null) {
   const g = {
-    id: crypto.randomUUID(),
+    id: newId(),
     name: uniqueGroupName(name),
     collapsed: false,
     dir,
     model: null, // "" = claude's own default; null = fall back to settings.defaultModel
+    namePrefix: "", // pinned in front of new session names created in this group
   };
   groups.push(g);
   persist();
@@ -1408,20 +1453,30 @@ function positionSubmenus(container) {
   }
 }
 
+function execCommandCopy(text) {
+  const ta = document.createElement("textarea");
+  ta.value = text;
+  ta.style.cssText = "position:fixed;opacity:0";
+  document.body.appendChild(ta);
+  ta.select();
+  try {
+    document.execCommand("copy");
+  } catch {
+    /* ignore */
+  }
+  ta.remove();
+}
+
 function copyText(text) {
-  navigator.clipboard?.writeText(text).catch(() => {
-    const ta = document.createElement("textarea");
-    ta.value = text;
-    ta.style.cssText = "position:fixed;opacity:0";
-    document.body.appendChild(ta);
-    ta.select();
-    try {
-      document.execCommand("copy");
-    } catch {
-      /* ignore */
-    }
-    ta.remove();
-  });
+  // navigator.clipboard is undefined outright (not just failing) on an insecure
+  // origin — e.g. a remote browser over plain http://<lan-ip> — and `a?.b().c()`
+  // short-circuits the whole chain including .catch(), so that case needs its
+  // own branch rather than relying on the promise rejecting into the fallback.
+  if (navigator.clipboard?.writeText) {
+    navigator.clipboard.writeText(text).catch(() => execCommandCopy(text));
+  } else {
+    execCommandCopy(text);
+  }
 }
 
 function openContextMenu(e, kind, id) {
@@ -1452,6 +1507,25 @@ function openContextMenu(e, kind, id) {
           invoke("write_pty", { id, data: "/remote-control\r" }).catch(
             () => {},
           ),
+      });
+      // A live session's PTY size is driven by whichever client last resized
+      // it — see resize_pty/claim_control. If another client's window has been
+      // driving it, force this client's actual current size through
+      // immediately (not via fit(), which no-ops if xterm's own idea of its
+      // size hasn't itself changed) rather than waiting for a real resize.
+      items.push({
+        label: "Take over display",
+        run: () =>
+          invoke("claim_control", { id, clientId: CLIENT_ID })
+            .then(() =>
+              invoke("resize_pty", {
+                id,
+                cols: s.term.cols,
+                rows: s.term.rows,
+                clientId: CLIENT_ID,
+              }),
+            )
+            .catch(() => {}),
       });
     }
     if (canSuspend(s)) {
@@ -1825,10 +1899,21 @@ function attachTerminal(s) {
     invoke("write_pty", { id: s.id, data }).catch(() => {});
   });
   term.onResize(({ cols, rows }) =>
-    invoke("resize_pty", { id: s.id, cols, rows }).catch(() => {}),
+    invoke("resize_pty", { id: s.id, cols, rows, clientId: CLIENT_ID }).catch(
+      () => {},
+    ),
   );
   // (optional-chained: guard against older xterm builds without onBell)
   term.onBell?.(() => onBell(s));
+  // Opt-in, per-client (Settings → Behavior): copy a selection to the clipboard
+  // the moment it's made, mirroring the classic X11-terminal convention — most
+  // useful on a remote browser tab, where there's no native terminal copy
+  // shortcut to fall back on.
+  term.onSelectionChange(() => {
+    if (!copyOnSelect) return;
+    const sel = term.getSelection();
+    if (sel) copyText(sel);
+  });
 }
 
 // Sidebar activity indicator. We don't parse the stream, so state is inferred
@@ -2440,10 +2525,15 @@ function nudgeRepaint(s) {
     if (!s.live || !s.term) return;
     const { cols, rows } = s.term;
     if (rows < 2) return;
-    invoke("resize_pty", { id: s.id, cols, rows: rows - 1 })
+    invoke("resize_pty", {
+      id: s.id,
+      cols,
+      rows: rows - 1,
+      clientId: CLIENT_ID,
+    })
       .then(() =>
         new Promise((r) => setTimeout(r, 40)).then(() =>
-          invoke("resize_pty", { id: s.id, cols, rows }),
+          invoke("resize_pty", { id: s.id, cols, rows, clientId: CLIENT_ID }),
         ),
       )
       .catch(() => {});
@@ -2455,7 +2545,7 @@ function nudgeRepaint(s) {
 // session id and becomes this session's id.
 function startSession(cwd, opts = {}) {
   const isResume = !!opts.resume;
-  const id = isResume ? opts.resume : crypto.randomUUID();
+  const id = isResume ? opts.resume : newId();
   if (sessions.has(id)) {
     const existing = sessions.get(id);
     if (opts.name && existing.name !== opts.name) {
@@ -2502,7 +2592,7 @@ function openAgents() {
     );
     return;
   }
-  const id = crypto.randomUUID();
+  const id = newId();
   addSession({
     id,
     cwd,
@@ -2702,10 +2792,23 @@ async function suspendSession(id) {
 // active/working session, a tiled pane, one the user exempted (noSuspend), and
 // only sessions canSuspend() allows.
 const SUSPEND_SWEEP_MS = 60_000;
-setInterval(() => {
+setInterval(async () => {
   if (POPOUT || !settings.suspendIdle) return;
   const hours = Number(settings.suspendIdleHours) || 0;
   if (hours <= 0) return;
+  // Refresh from the backend's ground truth (sees every client's input/output)
+  // before deciding — this client's own lastActivityMs may be stale (activity
+  // happened on another client) or, for a session it just reconnected to,
+  // never seeded at all.
+  try {
+    const running = await invoke("running_ptys");
+    for (const r of running) {
+      const s = sessions.get(r.id);
+      if (s) s.lastActivityMs = Date.now() - r.idleMs;
+    }
+  } catch (e) {
+    console.error(e);
+  }
   const cutoff = Date.now() - hours * 3600_000;
   for (const s of sessions.values()) {
     if (
@@ -2755,6 +2858,11 @@ async function restore() {
   // reconnect only to PTYs belonging to this window's profile.
   running = running.filter((r) => (r.profileId ?? null) === PROFILE_ID);
   const liveIds = new Set(running.map((r) => r.id));
+  // Ground truth for idle-auto-suspend (output or input, seen backend-side across
+  // every connected client) — not this client's own guess, which for a freshly
+  // connected client (nothing observed yet) would otherwise read as "idle forever"
+  // and suspend everything non-pinned within one sweep tick.
+  const idleMsById = new Map(running.map((r) => [r.id, r.idleMs]));
 
   for (const rec of savedSessions) {
     if (sessions.has(rec.id)) continue;
@@ -2790,6 +2898,9 @@ async function restore() {
       attachTerminal(s);
       s.needsRepaint = true;
       s.warmUntil = Date.now() + BELL_WARMUP_MS; // reconnect repaint burst isn't a real turn
+      if (idleMsById.has(id)) {
+        s.lastActivityMs = Date.now() - idleMsById.get(id);
+      }
     }
   }
   renderSessionList();
@@ -2926,6 +3037,7 @@ schemeQuery.addEventListener("change", () => {
 // --- new-session modal ---
 const newModal = document.getElementById("new-modal");
 const nsName = document.getElementById("ns-name");
+const nsNamePrefix = document.getElementById("ns-name-prefix");
 const nsWorktree = document.getElementById("ns-worktree");
 const nsRemote = document.getElementById("ns-remote");
 const nsIncognito = document.getElementById("ns-incognito");
@@ -2977,6 +3089,12 @@ function setCwdLabel() {
 function setGroupLabel() {
   const g = newSessionGroup && groups.find((x) => x.id === newSessionGroup);
   nsGroupLabel.textContent = g ? g.name : "Ungrouped";
+  // The prefix is a pinned chip in front of the name input, not pre-filled
+  // text, so switching groups can't leave a stale prefix baked into what the
+  // user already typed.
+  const prefix = (g && g.namePrefix) || "";
+  nsNamePrefix.textContent = prefix;
+  nsNamePrefix.hidden = !prefix;
 }
 
 function modelLabelFor(value) {
@@ -3244,8 +3362,10 @@ async function createFromModal() {
     return;
   }
   const cwd = newSessionCwd;
-  const name = nsName.value.trim() || baseName(cwd);
   const groupId = newSessionGroup || null;
+  const group = groupId && groups.find((x) => x.id === groupId);
+  const namePrefix = (group && group.namePrefix) || "";
+  const name = namePrefix + (nsName.value.trim() || baseName(cwd));
   const worktree = nsWorktree.checked;
   const model = newSessionModel;
   const remoteControl = nsRemote.checked;
@@ -3961,7 +4081,7 @@ function saveCustomTheme() {
   }
   const label =
     document.getElementById("set-theme-name").value.trim() || "Custom theme";
-  const id = "custom-" + crypto.randomUUID();
+  const id = "custom-" + newId();
   settings.customThemes = settings.customThemes || [];
   settings.customThemes.push({ id, label, term: parsed.term });
   settings.theme = id; // select the new theme right away
@@ -4102,6 +4222,16 @@ function renderSettingsGroups() {
         name.value = g.name;
       }
     });
+    const prefix = document.createElement("input");
+    prefix.className = "set-group-prefix-input";
+    prefix.value = g.namePrefix || "";
+    prefix.spellcheck = false;
+    prefix.placeholder = "prefix";
+    prefix.title = "Pinned in front of new session names created in this group";
+    prefix.addEventListener("change", () => {
+      g.namePrefix = prefix.value;
+      persist();
+    });
     const dir = Object.assign(document.createElement("span"), {
       className: "set-group-dir",
       textContent: g.dir || "— no folder —",
@@ -4151,6 +4281,7 @@ function renderSettingsGroups() {
     modelWrap.append(modelBtn, modelMenu);
     row.append(
       name,
+      prefix,
       dir,
       modelWrap,
       ghostBtn(g.dir ? "Change" : "Set folder", async () => {
@@ -4263,7 +4394,7 @@ async function createProfileFromForm() {
     return;
   }
   const copyLogin = document.getElementById("set-profile-copylogin").checked;
-  const id = crypto.randomUUID();
+  const id = newId();
   try {
     await invoke("create_profile", { id, copyLogin });
   } catch (e) {
@@ -4288,6 +4419,7 @@ function openSettings() {
   document.getElementById("set-claude-path").value = settings.claudePath;
   document.getElementById("set-fontsize").value =
     settings.terminalFontSize || 11;
+  document.getElementById("set-copy-on-select").checked = copyOnSelect;
   document.getElementById("set-notifications").checked =
     settings.notifications !== false;
   document.getElementById("set-bell-sound").checked =
@@ -4459,6 +4591,12 @@ document
   .addEventListener("change", (e) => {
     settings.resumeOnStart = e.target.checked;
     persist();
+  });
+document
+  .getElementById("set-copy-on-select")
+  .addEventListener("change", (e) => {
+    copyOnSelect = e.target.checked;
+    persistClient();
   });
 document.getElementById("set-suspend-idle").addEventListener("change", (e) => {
   settings.suspendIdle = e.target.checked;

@@ -1485,6 +1485,44 @@ body.dragging {
   border-color: var(--accent);
 }
 
+/* The group's name prefix is a pinned, non-editable chip in front of the
+   input rather than pre-filled text, so it can't be accidentally deleted or
+   left out when the user types their own name. */
+.ns-name-row {
+  display: flex;
+  align-items: stretch;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+
+.ns-name-row:focus-within {
+  border-color: var(--accent);
+}
+
+.ns-name-prefix {
+  display: flex;
+  align-items: center;
+  padding: 8px 2px 8px 10px;
+  color: var(--fg-dim);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+/* display:flex above would otherwise override the [hidden] attribute. */
+.ns-name-prefix[hidden] {
+  display: none;
+}
+
+.ns-name-row .ns-name-input {
+  flex: 1;
+  min-width: 0;
+  border: none;
+  background: transparent;
+  border-radius: 0;
+  padding-left: 4px;
+}
+
 .field-check {
   display: flex;
   align-items: center;
@@ -1731,6 +1769,22 @@ body.dev #new-session {
 }
 
 .set-group-name-input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+
+.set-group-prefix-input {
+  flex: none;
+  width: 70px;
+  background: var(--bg-alt);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  color: var(--fg);
+  font-size: 12px;
+  padding: 4px 7px;
+}
+
+.set-group-prefix-input:focus {
   outline: none;
   border-color: var(--accent);
 }

@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use base64::Engine as _;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -27,6 +27,20 @@ struct PtySession {
     // The window/profile that owns this session (None = default window). Lets each
     // window reconnect only to its own PTYs on reload.
     profile_id: Option<String>,
+    // When output last flowed or input was last sent — the one ground-truth idle
+    // clock, shared by every connected client (desktop + any remote browser via
+    // webserver.rs). Frontend idle-auto-suspend used to guess this per-client from
+    // whatever that client happened to observe, which left a freshly-connected
+    // client with no history to guess from — see running_ptys' idle_ms.
+    last_active: Arc<Mutex<Instant>>,
+    // Which client's window size actually drives this PTY's dimensions. Multiple
+    // clients (desktop + any remote browser) can view and type into the same
+    // session at once, but a resize is exclusive — two different window sizes
+    // both fighting to resize the same PTY corrupts claude's own redraws for
+    // whichever client didn't win. The first client to resize claims this
+    // implicitly; after that, only a matching client_id (or an explicit
+    // claim_control call) can resize it further.
+    controller: Option<String>,
 }
 
 /// Build a throwaway `CLAUDE_CONFIG_DIR` for an incognito session: auth/settings/
@@ -297,6 +311,10 @@ pub struct RunningPty {
     cwd: String,
     incognito: bool,
     profile_id: Option<String>,
+    // Milliseconds since output last flowed or input was last sent — ground truth
+    // for idle-auto-suspend, shared by every connected client. See PtySession's
+    // `last_active` for why this replaced a per-client guess.
+    idle_ms: u64,
 }
 
 /// Kebab-case a display name into a valid worktree segment: lowercase, runs of
@@ -460,6 +478,7 @@ pub fn open_pty(
     let writer = pair.master.take_writer().map_err(|e| e.to_string())?;
 
     let (tx, rx) = mpsc::channel::<Vec<u8>>();
+    let last_active = Arc::new(Mutex::new(Instant::now()));
 
     // Reader thread: blocking reads off the PTY, never on the main thread.
     std::thread::spawn(move || {
@@ -482,6 +501,7 @@ pub fn open_pty(
     let batch_app = app.clone();
     let batch_id = id.clone();
     let batch_sessions = state.sessions.clone();
+    let batch_last_active = last_active.clone();
     std::thread::spawn(move || {
         let engine = base64::engine::general_purpose::STANDARD;
         loop {
@@ -499,6 +519,9 @@ pub fn open_pty(
                     Err(mpsc::RecvTimeoutError::Disconnected) => break true,
                 }
             };
+            if let Ok(mut t) = batch_last_active.lock() {
+                *t = Instant::now();
+            }
             let _ = batch_app.emit(
                 "pty-output",
                 PtyOutput {
@@ -532,6 +555,8 @@ pub fn open_pty(
             child,
             incognito_dir,
             profile_id: profile_id.filter(|p| !p.is_empty()),
+            last_active,
+            controller: None,
         },
     );
     Ok(())
@@ -541,6 +566,9 @@ pub fn open_pty(
 pub fn write_pty(state: State<PtyState>, id: String, data: String) -> Result<(), String> {
     let mut map = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = map.get_mut(&id).ok_or("no such session")?;
+    if let Ok(mut t) = session.last_active.lock() {
+        *t = Instant::now();
+    }
     session
         .writer
         .write_all(data.as_bytes())
@@ -549,18 +577,45 @@ pub fn write_pty(state: State<PtyState>, id: String, data: String) -> Result<(),
 }
 
 #[tauri::command]
-pub fn resize_pty(state: State<PtyState>, id: String, cols: u16, rows: u16) -> Result<(), String> {
-    let map = state.sessions.lock().map_err(|e| e.to_string())?;
-    if let Some(session) = map.get(&id) {
-        session
-            .master
-            .resize(PtySize {
-                rows,
-                cols,
-                pixel_width: 0,
-                pixel_height: 0,
-            })
-            .map_err(|e| e.to_string())?;
+pub fn resize_pty(
+    state: State<PtyState>,
+    id: String,
+    cols: u16,
+    rows: u16,
+    client_id: String,
+) -> Result<(), String> {
+    let mut map = state.sessions.lock().map_err(|e| e.to_string())?;
+    if let Some(session) = map.get_mut(&id) {
+        // First resize on a session claims it — so the common case (one viewer)
+        // works with zero setup. Once claimed, only the same client (or an
+        // explicit claim_control call) can resize it further.
+        if session.controller.is_none() {
+            session.controller = Some(client_id.clone());
+        }
+        if session.controller.as_deref() == Some(client_id.as_str()) {
+            session
+                .master
+                .resize(PtySize {
+                    rows,
+                    cols,
+                    pixel_width: 0,
+                    pixel_height: 0,
+                })
+                .map_err(|e| e.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+/// Explicit "Take over display": force this client to become the session's
+/// resize controller regardless of who currently holds it. For when a
+/// different client's window size has been driving a shared session's PTY
+/// dimensions and you want your own to drive it instead.
+#[tauri::command]
+pub fn claim_control(state: State<PtyState>, id: String, client_id: String) -> Result<(), String> {
+    let mut map = state.sessions.lock().map_err(|e| e.to_string())?;
+    if let Some(session) = map.get_mut(&id) {
+        session.controller = Some(client_id);
     }
     Ok(())
 }
@@ -597,6 +652,11 @@ pub fn running_ptys(state: State<PtyState>) -> Vec<RunningPty> {
                     cwd: session.cwd.clone(),
                     incognito: session.incognito_dir.is_some(),
                     profile_id: session.profile_id.clone(),
+                    idle_ms: session
+                        .last_active
+                        .lock()
+                        .map(|t| t.elapsed().as_millis() as u64)
+                        .unwrap_or(0),
                 })
                 .collect()
         })

@@ -4,6 +4,7 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Mandor</title>
+    <link rel="icon" type="image/png" href="favicon.png" />
     <link rel="stylesheet" href="vendor/xterm.css" />
     <link rel="stylesheet" href="styles.css" />
     <script src="vendor/xterm.js" defer></script>
@@ -285,13 +286,16 @@
           </div>
           <label class="field">
             <span class="field-k">Name</span>
-            <input
-              id="ns-name"
-              class="ns-input"
-              type="text"
-              spellcheck="false"
-              placeholder="folder name"
-            />
+            <div class="ns-name-row">
+              <span id="ns-name-prefix" class="ns-name-prefix" hidden></span>
+              <input
+                id="ns-name"
+                class="ns-input ns-name-input"
+                type="text"
+                spellcheck="false"
+                placeholder="folder name"
+              />
+            </div>
           </label>
           <div class="field">
             <span class="field-k">Model</span>
@@ -612,6 +616,14 @@
                 >Only applies while “Suspend idle sessions” is on.</span
               >
             </div>
+            <label class="set-check">
+              <input id="set-copy-on-select" type="checkbox" />
+              <span
+                >Copy selected terminal text to the clipboard automatically
+                (this device only — most useful in a remote browser tab, which
+                has no native terminal copy shortcut)</span
+              >
+            </label>
             <label class="set-check">
               <input id="set-notifications" type="checkbox" />
               <span
