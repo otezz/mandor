@@ -1870,6 +1870,19 @@ body.remote [data-section="remote"] {
   display: none !important;
 }
 
+/* macOS desktop: the native frame supplies window buttons, resizing and edges;
+   the traffic lights overlay the left of the titlebar. */
+body.native-frame .win-btn,
+body.native-frame .resizer {
+  display: none;
+}
+body.native-frame .window {
+  border: none;
+}
+body.native-frame .titlebar {
+  padding-left: 76px;
+}
+
 .browse-list {
   max-height: 260px;
 }

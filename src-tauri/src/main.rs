@@ -424,6 +424,21 @@ fn open_url(url: String) -> Result<(), String> {
     cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// Secondary windows get the same frame as the main window (see
+/// tauri.macos.conf.json): the custom titlebar everywhere, and on macOS native
+/// traffic lights too — a borderless NSWindow can't enter native full screen.
+fn with_window_frame<'a, R: tauri::Runtime, M: Manager<R>>(
+    builder: tauri::WebviewWindowBuilder<'a, R, M>,
+) -> tauri::WebviewWindowBuilder<'a, R, M> {
+    #[cfg(target_os = "macos")]
+    return builder
+        .title_bar_style(tauri::TitleBarStyle::Overlay)
+        .hidden_title(true)
+        .traffic_light_position(tauri::LogicalPosition::new(14.0, 18.0));
+    #[cfg(not(target_os = "macos"))]
+    builder.decorations(false)
+}
+
 /// Open (or focus) a separate window showing a single session's terminal. The
 /// window reconnects to the already-running PTY by id; label is `popout-<id>`.
 #[tauri::command]
@@ -435,11 +450,12 @@ fn open_session_window(app: tauri::AppHandle, id: String, name: String) -> Resul
     }
     // `id` is a UUID (url-safe); the human name only goes in the window title.
     let url = format!("index.html?popout=1&id={id}");
-    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
-        .title(name)
-        .inner_size(1000.0, 700.0)
-        .min_inner_size(600.0, 400.0)
-        .decorations(false) // use the same custom titlebar as the main window
+    let builder =
+        tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
+            .title(name)
+            .inner_size(1000.0, 700.0)
+            .min_inner_size(600.0, 400.0);
+    with_window_frame(builder)
         .build()
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -456,11 +472,12 @@ fn open_profile_window(app: tauri::AppHandle, id: String, name: String) -> Resul
         return Ok(());
     }
     let url = format!("index.html?profile={id}");
-    tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
-        .title(name)
-        .inner_size(1100.0, 760.0)
-        .min_inner_size(600.0, 400.0)
-        .decorations(false) // same custom titlebar as the main window
+    let builder =
+        tauri::WebviewWindowBuilder::new(&app, &label, tauri::WebviewUrl::App(url.into()))
+            .title(name)
+            .inner_size(1100.0, 760.0)
+            .min_inner_size(600.0, 400.0);
+    with_window_frame(builder)
         .build()
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -496,6 +513,21 @@ fn launched_by_gnome_autostart() -> bool {
 #[cfg(not(target_os = "linux"))]
 fn launched_by_gnome_autostart() -> bool {
     false
+}
+
+/// On macOS the window frame is fixed by config (native traffic lights), so a
+/// saved `decorated: false` from an older borderless build must not be restored.
+fn window_state_flags() -> StateFlags {
+    let flags = StateFlags::SIZE
+        | StateFlags::POSITION
+        | StateFlags::MAXIMIZED
+        | StateFlags::DECORATIONS
+        | StateFlags::FULLSCREEN;
+    if cfg!(target_os = "macos") {
+        flags - StateFlags::DECORATIONS
+    } else {
+        flags
+    }
 }
 
 /// Reveal and focus the main window (from the tray or a second-instance launch).
@@ -553,13 +585,7 @@ fn main() {
         // would relaunch the app invisible.
         .plugin(
             tauri_plugin_window_state::Builder::default()
-                .with_state_flags(
-                    StateFlags::SIZE
-                        | StateFlags::POSITION
-                        | StateFlags::MAXIMIZED
-                        | StateFlags::DECORATIONS
-                        | StateFlags::FULLSCREEN,
-                )
+                .with_state_flags(window_state_flags())
                 .build(),
         )
         .manage(PtyState::default())

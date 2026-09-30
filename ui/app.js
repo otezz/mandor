@@ -26,6 +26,10 @@ if (!IS_REMOTE) {
   ({ invoke } = window.__TAURI__.core);
   ({ listen } = window.__TAURI__.event);
   appWindow = window.__TAURI__.window.getCurrentWindow();
+  // macOS: native traffic lights (tauri.macos.conf.json) replace the custom
+  // window buttons and resize grips, and give native full screen.
+  if (navigator.userAgent.includes("Mac"))
+    document.body.classList.add("native-frame");
 } else {
   document.body.classList.add("remote");
   const REMOTE_TOKEN = new URLSearchParams(location.search).get("token") || "";
