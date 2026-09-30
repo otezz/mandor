@@ -604,6 +604,17 @@ fn main() {
             // webserver.rs. Read once at launch; toggling the setting takes
             // effect on the next restart.
             webserver::spawn(app.handle().clone(), store::get_remote_config());
+            // show_notification uses notify_rust directly, so register the sender
+            // app as tauri-plugin-notification does; otherwise the first
+            // notification looks up an app named "use_default" and macOS asks
+            // "Where is use_default?". Unbundled dev builds have no bundle to
+            // register, hence Terminal.
+            #[cfg(target_os = "macos")]
+            let _ = notify_rust::set_application(if tauri::is_dev() {
+                "com.apple.Terminal"
+            } else {
+                &app.config().identifier
+            });
             // Tray icon: closing the window hides to tray (sessions keep running);
             // Quit really exits (killing sessions via the ExitRequested handler).
             let show_i = MenuItem::with_id(app, "show", "Show Mandor", true, None::<&str>)?;
