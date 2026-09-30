@@ -617,14 +617,17 @@ fn main() {
             });
             // Tray icon: closing the window hides to tray (sessions keep running);
             // Quit really exits (killing sessions via the ExitRequested handler).
+            // On macOS a left click opens the menu, like other menu bar icons;
+            // elsewhere it shows the window and the menu is on right click.
             let show_i = MenuItem::with_id(app, "show", "Show Mandor", true, None::<&str>)?;
             let quit_i = MenuItem::with_id(app, "quit", "Quit Mandor", true, None::<&str>)?;
             let menu = Menu::with_items(app, &[&show_i, &quit_i])?;
+            let menu_on_left_click = cfg!(target_os = "macos");
             TrayIconBuilder::with_id("main")
                 .icon(app.default_window_icon().cloned().ok_or("no window icon")?)
                 .tooltip("Mandor")
                 .menu(&menu)
-                .show_menu_on_left_click(false)
+                .show_menu_on_left_click(menu_on_left_click)
                 .on_menu_event(|app, event| match event.id.as_ref() {
                     "show" => show_main(app),
                     "quit" => {
@@ -633,7 +636,10 @@ fn main() {
                     }
                     _ => {}
                 })
-                .on_tray_icon_event(|tray, event| {
+                .on_tray_icon_event(move |tray, event| {
+                    if menu_on_left_click {
+                        return;
+                    }
                     if let TrayIconEvent::Click {
                         button: MouseButton::Left,
                         button_state: MouseButtonState::Up,
