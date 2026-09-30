@@ -22,6 +22,38 @@ function newId() {
   });
 }
 
+// A profile window (?profile=<id>) is a full sidebar bound to one Claude profile:
+// its sessions run under that profile's CLAUDE_CONFIG_DIR (own login, settings,
+// history) and it keeps its own per-profile session list. null = the default
+// window (real ~/.claude).
+const PROFILE_ID = new URLSearchParams(location.search).get("profile") || null;
+
+// A stable per-browser id, separate from the UI-state blob further down (see
+// CLIENT_KEY) — arbitrates which client's window size drives a shared
+// session's actual PTY dimensions (see resize_pty/claim_control on the
+// backend): the first client to resize a session claims it, and stays the
+// sole driver until another client explicitly "takes over" via the session's
+// context menu. Naturally distinct between the desktop app and any remote
+// browser (separate localStorage origins), and stable across reloads of the
+// same one. Declared this early (rather than alongside CLIENT_KEY) because
+// connectRemoteWs(), below, needs it immediately — before PROFILE_ID's own
+// original declaration point, so that moved up here too.
+const CLIENT_ID_KEY =
+  "mandor-term.client-id" + (PROFILE_ID ? "." + PROFILE_ID : "");
+function loadOrCreateClientId() {
+  try {
+    let id = localStorage.getItem(CLIENT_ID_KEY);
+    if (!id) {
+      id = newId();
+      localStorage.setItem(CLIENT_ID_KEY, id);
+    }
+    return id;
+  } catch {
+    return newId(); // storage unavailable — still usable this session
+  }
+}
+const CLIENT_ID = loadOrCreateClientId();
+
 if (!IS_REMOTE) {
   ({ invoke } = window.__TAURI__.core);
   ({ listen } = window.__TAURI__.event);
@@ -66,9 +98,17 @@ if (!IS_REMOTE) {
   let wsReconnectDelay = 1000;
   function connectRemoteWs() {
     const proto = location.protocol === "https:" ? "wss:" : "ws:";
-    ws = new WebSocket(withToken(`${proto}//${location.host}/ws`));
+    // clientId tags this connection so the backend can release this client's
+    // claimed session sizes (see resize_pty/claim_control) when it closes.
+    ws = new WebSocket(
+      withToken(
+        `${proto}//${location.host}/ws?clientId=${encodeURIComponent(CLIENT_ID)}`,
+      ),
+    );
     ws.addEventListener("open", () => {
       wsReconnectDelay = 1000;
+      setConnected(true);
+      syncRemoteLiveState(); // a no-op until restore() has finished
     });
     ws.addEventListener("message", (ev) => {
       let msg;
@@ -81,6 +121,7 @@ if (!IS_REMOTE) {
       if (cbs) for (const cb of cbs) cb({ payload: msg.payload });
     });
     ws.addEventListener("close", () => {
+      setConnected(false);
       setTimeout(connectRemoteWs, wsReconnectDelay);
       wsReconnectDelay = Math.min(wsReconnectDelay * 1.5, 15000);
     });
@@ -113,11 +154,6 @@ const POPOUT = new URLSearchParams(location.search).get("popout") === "1";
 const POPOUT_ID = new URLSearchParams(location.search).get("id");
 if (POPOUT) document.body.classList.add("popout");
 
-// A profile window (?profile=<id>) is a full sidebar bound to one Claude profile:
-// its sessions run under that profile's CLAUDE_CONFIG_DIR (own login, settings,
-// history) and it keeps its own per-profile session list. null = the default
-// window (real ~/.claude).
-const PROFILE_ID = new URLSearchParams(location.search).get("profile") || null;
 if (PROFILE_ID) document.body.classList.add("profile-window");
 
 // id -> session record. id === the claude session id (forced via --session-id),
@@ -559,29 +595,6 @@ function parseGhosttyTheme(text) {
 const CLIENT_KEY_BASE = "mandor-term.client";
 const CLIENT_KEY = CLIENT_KEY_BASE + (PROFILE_ID ? "." + PROFILE_ID : "");
 
-// A stable per-browser id, separate from CLIENT_KEY's UI-state blob above —
-// arbitrates which client's window size drives a shared session's actual PTY
-// dimensions (see resize_pty/claim_control on the backend): the first client to
-// resize a session claims it, and stays the sole driver until another client
-// explicitly "takes over" via the session's context menu. Naturally distinct
-// between the desktop app and any remote browser (separate localStorage
-// origins), and stable across reloads of the same one.
-const CLIENT_ID_KEY =
-  "mandor-term.client-id" + (PROFILE_ID ? "." + PROFILE_ID : "");
-function loadOrCreateClientId() {
-  try {
-    let id = localStorage.getItem(CLIENT_ID_KEY);
-    if (!id) {
-      id = newId();
-      localStorage.setItem(CLIENT_ID_KEY, id);
-    }
-    return id;
-  } catch {
-    return newId(); // storage unavailable — still usable this session
-  }
-}
-const CLIENT_ID = loadOrCreateClientId();
-
 // Global profile registry (shared across all windows): [{ id, name }]. Each entry
 // maps to a persistent config dir the backend owns (profiles_base/<id>).
 const PROFILES_KEY = "mandor-term.profiles";
@@ -660,6 +673,78 @@ function persist() {
 const LEGACY_STORE_KEY =
   "mandor-term.sidebar" + (PROFILE_ID ? "." + PROFILE_ID : "");
 
+// Remote-only: a thin banner while Mandor is unreachable (a restart, a
+// dropped tunnel) — created lazily so desktop pays nothing for it. A restart is
+// only a ~1-2s outage, so the show delay is short (a tiny blip still never
+// flashes it) and, once shown, it stays up for a minimum time so it's actually
+// readable rather than a one-frame flicker.
+const CONNECTION_BANNER_DELAY_MS = 400;
+const CONNECTION_BANNER_MIN_VISIBLE_MS = 1500;
+let connectionBanner = null;
+let connectionBannerTimer = null;
+let connectionBannerShownAt = 0;
+function setConnected(ok) {
+  if (!IS_REMOTE) return;
+  if (ok) {
+    if (connectionBannerTimer) {
+      clearTimeout(connectionBannerTimer);
+      connectionBannerTimer = null;
+    }
+    if (connectionBanner && !connectionBanner.hidden) {
+      const remaining =
+        CONNECTION_BANNER_MIN_VISIBLE_MS -
+        (Date.now() - connectionBannerShownAt);
+      connectionBannerTimer = setTimeout(
+        () => {
+          connectionBannerTimer = null;
+          connectionBanner.hidden = true;
+        },
+        Math.max(0, remaining),
+      );
+    }
+    return;
+  }
+  if (connectionBannerTimer) {
+    // Already waiting to show — or waiting out the minimum visible time before
+    // hiding, which a new failure cancels: it's down again, stay visible.
+    if (connectionBanner && !connectionBanner.hidden) {
+      clearTimeout(connectionBannerTimer);
+      connectionBannerTimer = null;
+    }
+    return;
+  }
+  if (connectionBanner && !connectionBanner.hidden) return; // already showing
+  connectionBannerTimer = setTimeout(() => {
+    connectionBannerTimer = null;
+    if (!connectionBanner) {
+      connectionBanner = document.createElement("div");
+      connectionBanner.id = "connection-banner";
+      connectionBanner.textContent = "Mandor is unreachable — reconnecting…";
+      document.body.appendChild(connectionBanner);
+    }
+    connectionBanner.hidden = false;
+    connectionBannerShownAt = Date.now();
+  }, CONNECTION_BANNER_DELAY_MS);
+}
+
+// Retries forever rather than falling back to an empty result on one failed
+// attempt — used for the two startup fetches (get_store, running_ptys) whose
+// prior bare try/catch treated a transient outage (e.g. reloading the page
+// during a Mandor restart) exactly like "no sessions exist", with no way to
+// recover short of the user reloading again once it came back.
+async function invokeWithRetry(command, args) {
+  for (;;) {
+    try {
+      const result = await invoke(command, args);
+      setConnected(true);
+      return result;
+    } catch (e) {
+      setConnected(false);
+      await sleep(2000);
+    }
+  }
+}
+
 async function loadStore() {
   try {
     const client = JSON.parse(localStorage.getItem(CLIENT_KEY) || "{}");
@@ -673,7 +758,8 @@ async function loadStore() {
     ungroupedCollapsed = !!client.ungroupedCollapsed;
     copyOnSelect = !!client.copyOnSelect;
 
-    let data = (await invoke("get_store", { profileId: PROFILE_ID })) || {};
+    let data =
+      (await invokeWithRetry("get_store", { profileId: PROFILE_ID })) || {};
     if (!Array.isArray(data.sessions) || data.sessions.length === 0) {
       const legacy = migrateLegacyStore();
       if (legacy) data = legacy;
@@ -1187,6 +1273,9 @@ function buildRow(s) {
     e.stopPropagation();
     openContextMenu(e, "session", s.id);
   });
+  setupLongPressContextMenu(row, (pos) =>
+    openContextMenu(pos, "session", s.id),
+  );
   row.addEventListener("mousedown", (e) => dragStart(e, "session", s.id, row));
   return row;
 }
@@ -1760,6 +1849,149 @@ function ligatureJoiner(text) {
 // height terminal is a sliver at the window edge — so extend it to a small edge
 // zone (the region xterm ignores, so the two don't double up), re-driving xterm's
 // selection at the clamped edge so it keeps growing as the buffer scrolls.
+// xterm.js's own selection (SelectionService) is wired to mousedown/mousemove/
+// mouseup only — verified against its actual source, not assumed — with no
+// touch handling anywhere. A touch-drag was never going to produce a
+// selection on any mobile browser regardless of what this does, so there's no
+// competing gesture to protect: scroll unconditionally on drag.
+const TOUCH_SCROLL_PX_PER_LINE = 20;
+function setupTouchScroll(term, el) {
+  let lastY = null;
+  let accumPx = 0;
+  el.addEventListener(
+    "touchstart",
+    (e) => {
+      lastY = e.touches.length === 1 ? e.touches[0].clientY : null;
+      accumPx = 0;
+    },
+    { passive: true },
+  );
+  el.addEventListener(
+    "touchmove",
+    (e) => {
+      if (lastY === null || e.touches.length !== 1) return;
+      const y = e.touches[0].clientY;
+      accumPx += lastY - y; // dragging up = scroll down (content moves up)
+      lastY = y;
+      let lines = 0;
+      while (Math.abs(accumPx) >= TOUCH_SCROLL_PX_PER_LINE) {
+        const dir = accumPx > 0 ? 1 : -1;
+        lines += dir;
+        accumPx -= dir * TOUCH_SCROLL_PX_PER_LINE;
+      }
+      if (lines) term.scrollLines(lines);
+      e.preventDefault();
+    },
+    { passive: false },
+  );
+  el.addEventListener(
+    "touchend",
+    () => {
+      lastY = null;
+    },
+    { passive: true },
+  );
+}
+
+// xterm.js has no touch-based text selection at all — see setupTouchScroll's
+// comment — so there's no drag gesture to give mobile users a way to copy
+// text. A long press with no meaningful movement copies the whole currently
+// visible screen instead: coarser than a precise range, but a real, working
+// affordance rather than relying on a gesture that can't produce one.
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_MOVE_TOLERANCE_PX = 10;
+function setupLongPressCopy(term, el) {
+  let timer = null;
+  let startX = 0;
+  let startY = 0;
+  const cancel = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+  el.addEventListener(
+    "touchstart",
+    (e) => {
+      cancel();
+      if (e.touches.length !== 1) return;
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+      timer = setTimeout(() => {
+        timer = null;
+        const buf = term.buffer.active;
+        const lines = [];
+        for (let i = 0; i < term.rows; i++) {
+          const line = buf.getLine(buf.viewportY + i);
+          if (line) lines.push(line.translateToString(true));
+        }
+        copyText(lines.join("\n"));
+        flashCopyFeedback(el);
+      }, LONG_PRESS_MS);
+    },
+    { passive: true },
+  );
+  el.addEventListener(
+    "touchmove",
+    (e) => {
+      if (!timer || e.touches.length !== 1) return;
+      const dx = e.touches[0].clientX - startX;
+      const dy = e.touches[0].clientY - startY;
+      if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_TOLERANCE_PX) cancel();
+    },
+    { passive: true },
+  );
+  el.addEventListener("touchend", cancel, { passive: true });
+}
+
+function flashCopyFeedback(el) {
+  el.classList.add("copy-flash");
+  setTimeout(() => el.classList.remove("copy-flash"), 200);
+}
+
+// Mobile browsers don't reliably translate a long-press inside a scrollable
+// list into a native `contextmenu` event (unclear which specific browser/OS
+// gesture conflict is responsible, and not practical to pin down for
+// certain) — drive it explicitly instead, the same way terminal long-press-
+// copy already does. `handler` gets a plain {clientX, clientY} object, not a
+// real event — openContextMenu only ever reads those two fields off it.
+function setupLongPressContextMenu(el, handler) {
+  let startX = 0;
+  let startY = 0;
+  let timer = null;
+  const cancel = () => {
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+  };
+  el.addEventListener(
+    "touchstart",
+    (e) => {
+      cancel();
+      if (e.touches.length !== 1) return;
+      startX = e.touches[0].clientX;
+      startY = e.touches[0].clientY;
+      timer = setTimeout(() => {
+        timer = null;
+        handler({ clientX: startX, clientY: startY });
+      }, LONG_PRESS_MS);
+    },
+    { passive: true },
+  );
+  el.addEventListener(
+    "touchmove",
+    (e) => {
+      if (!timer || e.touches.length !== 1) return;
+      const dx = e.touches[0].clientX - startX;
+      const dy = e.touches[0].clientY - startY;
+      if (Math.hypot(dx, dy) > LONG_PRESS_MOVE_TOLERANCE_PX) cancel();
+    },
+    { passive: true },
+  );
+  el.addEventListener("touchend", cancel, { passive: true });
+}
+
 const SELECTION_EDGE = 28;
 function setupSelectionAutoscroll(s, el) {
   el.addEventListener("mousedown", (e) => {
@@ -1898,6 +2130,8 @@ function attachTerminal(s) {
     ? term.registerCharacterJoiner(ligatureJoiner)
     : null;
   setupSelectionAutoscroll(s, el);
+  setupTouchScroll(term, el);
+  setupLongPressCopy(term, el);
   term.onData((data) => {
     s.lastActivityMs = Date.now(); // typing counts as activity
     invoke("write_pty", { id: s.id, data }).catch(() => {});
@@ -2295,12 +2529,15 @@ async function spawnSession(s) {
     // --resume"); enable it in-session via /remote-control instead.
   }
   if (!s.agents) s.spawnMode = "resume"; // any later respawn resumes (agents re-runs agents)
+  s.spawning = true; // live here before the backend lists it — see syncRemoteLiveState
   try {
     await invoke("open_pty", args);
   } catch (e) {
     s.term.writeln(`\r\n\x1b[31mFailed to start claude: ${e}\x1b[0m`);
     s.exited = true;
     s.live = false;
+  } finally {
+    s.spawning = false;
   }
   renderSessionList();
 }
@@ -2852,12 +3089,7 @@ async function restore() {
   applySidebarCollapsed();
   updateFilterButtons();
   applySettings();
-  let running = [];
-  try {
-    running = await invoke("running_ptys");
-  } catch (e) {
-    console.error(e);
-  }
+  let running = await invokeWithRetry("running_ptys");
   // Each window owns its own sessions; running_ptys is global across windows, so
   // reconnect only to PTYs belonging to this window's profile.
   running = running.filter((r) => (r.profileId ?? null) === PROFILE_ID);
@@ -2867,6 +3099,7 @@ async function restore() {
   // connected client (nothing observed yet) would otherwise read as "idle forever"
   // and suspend everything non-pinned within one sweep tick.
   const idleMsById = new Map(running.map((r) => [r.id, r.idleMs]));
+  const startedAtById = new Map(running.map((r) => [r.id, r.startedAtMs]));
 
   for (const rec of savedSessions) {
     if (sessions.has(rec.id)) continue;
@@ -2904,6 +3137,7 @@ async function restore() {
       s.warmUntil = Date.now() + BELL_WARMUP_MS; // reconnect repaint burst isn't a real turn
       if (idleMsById.has(id)) {
         s.lastActivityMs = Date.now() - idleMsById.get(id);
+        s.ptyStartedAt = startedAtById.get(id);
       }
     }
   }
@@ -2946,18 +3180,90 @@ async function restore() {
       persist();
     }
   }
+  restoreDone = true;
   if (settings.resumeOnStart) resumeAllOnStart();
 }
+
+// Remote clients learn which sessions are live only once, in restore() above.
+// But the host keeps changing that afterward — a Mandor restart kills every PTY
+// and the desktop's resume-on-start respawns them one by one — and a remote tab
+// never hears about it (pty-output for a session with no attached terminal is
+// dropped, and `live` isn't part of the shared store). So a tab reloaded during
+// that window, or left open across it, showed "no active sessions" forever even
+// though the backend had them all. Poll the backend's ground truth instead and
+// reconcile; the same poll doubles as the heartbeat driving the unreachable
+// banner, independent of how (or whether) a proxy surfaces a websocket close.
+let restoreDone = false;
+let liveSyncBusy = false;
+async function syncRemoteLiveState() {
+  if (!restoreDone || liveSyncBusy) return;
+  liveSyncBusy = true;
+  try {
+    let running;
+    try {
+      running = await invoke("running_ptys");
+    } catch {
+      setConnected(false);
+      return;
+    }
+    setConnected(true);
+    running = running.filter((r) => (r.profileId ?? null) === PROFILE_ID);
+    const liveIds = new Set(running.map((r) => r.id));
+    let changed = false;
+
+    // A PTY this tab has no (or a stale) view of: it came up, or was replaced,
+    // after this tab looked. Its terminal either doesn't exist (output was
+    // dropped) or holds the previous run's output while resume replays the
+    // transcript — either way start from a clean, freshly-repainted terminal.
+    const adopt = (s, startedAtMs, idleMs) => {
+      s.live = true;
+      s.exited = false;
+      s.suspended = false;
+      s.ptyStartedAt = startedAtMs;
+      s.lastActivityMs = Date.now() - idleMs;
+      s.warmUntil = Date.now() + BELL_WARMUP_MS; // replay isn't a real turn
+      if (s.term) s.term.reset();
+      else attachTerminal(s);
+      s.needsRepaint = true;
+      if (s.id === activeId) {
+        renderView();
+        nudgeRepaint(s);
+        s.needsRepaint = false;
+      }
+      changed = true;
+    };
+
+    // Sessions unknown here are deliberately ignored: persisted ones reach this
+    // tab as cold pills via store-update (and are adopted on the next pass),
+    // and incognito ones are never shared between clients.
+    for (const { id, idleMs, startedAtMs } of running) {
+      const s = sessions.get(id);
+      if (!s || s.spawning) continue;
+      if (!s.live) adopt(s, startedAtMs, idleMs);
+      else if (s.ptyStartedAt === undefined) s.ptyStartedAt = startedAtMs;
+      else if (s.ptyStartedAt !== startedAtMs) adopt(s, startedAtMs, idleMs);
+    }
+
+    for (const s of sessions.values()) {
+      // `spawning`: live here but the backend doesn't list it until open_pty
+      // lands — that gap isn't the session having died.
+      if (!s.live || liveIds.has(s.id) || s.spawning || s.suspending) continue;
+      s.live = false;
+      s.ptyStartedAt = undefined;
+      if (s.term) s.term.write("\r\n\x1b[90m[claude exited]\x1b[0m\r\n");
+      changed = true;
+    }
+    if (changed) renderSessionList();
+  } finally {
+    liveSyncBusy = false;
+  }
+}
+if (IS_REMOTE && !POPOUT) setInterval(syncRemoteLiveState, 3000);
 
 // Pop-out window: render just the one session, reconnected to its running PTY.
 async function runPopout() {
   applySettings();
-  let running = [];
-  try {
-    running = await invoke("running_ptys");
-  } catch (e) {
-    console.error(e);
-  }
+  const running = await invokeWithRetry("running_ptys");
   const info = running.find((r) => r.id === POPOUT_ID);
   const s = addSession({
     id: POPOUT_ID,

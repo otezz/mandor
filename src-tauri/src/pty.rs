@@ -3,7 +3,7 @@ use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use base64::Engine as _;
 use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
@@ -33,14 +33,53 @@ struct PtySession {
     // whatever that client happened to observe, which left a freshly-connected
     // client with no history to guess from — see running_ptys' idle_ms.
     last_active: Arc<Mutex<Instant>>,
-    // Which client's window size actually drives this PTY's dimensions. Multiple
-    // clients (desktop + any remote browser) can view and type into the same
-    // session at once, but a resize is exclusive — two different window sizes
-    // both fighting to resize the same PTY corrupts claude's own redraws for
-    // whichever client didn't win. The first client to resize claims this
-    // implicitly; after that, only a matching client_id (or an explicit
-    // claim_control call) can resize it further.
-    controller: Option<String>,
+    // Every currently-known client's own desired (cols, rows) for this session.
+    // Multiple clients (desktop + any remote browser) can view and type into the
+    // same session at once, but a resize is exclusive — the PTY only has one
+    // real size. Absent an explicit pin (below), the applied size is the min
+    // across every entry here, so nothing gets cut off for anyone (same idea as
+    // tmux/screen sizing a shared session to its smallest attached client). A
+    // remote client's entry is removed when its websocket closes (see
+    // client_disconnected, called from webserver.rs) so a client that's gone
+    // stops constraining everyone else.
+    client_sizes: HashMap<String, (u16, u16)>,
+    // Explicit "Take over display" override: while Some, only this client's
+    // entry in client_sizes drives the real PTY size, ignoring the min-of-all
+    // computation above. Cleared automatically when this client disconnects,
+    // reverting to auto min-of-all sizing among whoever's left.
+    pinned: Option<String>,
+    // Epoch ms this PTY was spawned — identifies *this* process. A session id
+    // outlives its PTY (restart, resume, suspend then wake all respawn under the
+    // same id), so a remote client comparing ids alone can't tell a respawned
+    // session from the one it already has terminal output for (see
+    // running_ptys' started_at_ms).
+    started_at_ms: u64,
+}
+
+/// Recompute and apply a session's real PTY size from its current
+/// client_sizes/pinned state (see PtySession's doc comments for the rule).
+/// A no-op if there's nothing to size against yet (e.g. pinned to a client
+/// that hasn't reported a size for this session at all).
+fn apply_effective_size(session: &mut PtySession) -> Result<(), String> {
+    let size =
+        match &session.pinned {
+            Some(client_id) => session.client_sizes.get(client_id).copied(),
+            None => session.client_sizes.values().copied().reduce(
+                |(min_cols, min_rows), (cols, rows)| (min_cols.min(cols), min_rows.min(rows)),
+            ),
+        };
+    let Some((cols, rows)) = size else {
+        return Ok(());
+    };
+    session
+        .master
+        .resize(PtySize {
+            rows,
+            cols,
+            pixel_width: 0,
+            pixel_height: 0,
+        })
+        .map_err(|e| e.to_string())
 }
 
 /// Build a throwaway `CLAUDE_CONFIG_DIR` for an incognito session: auth/settings/
@@ -315,6 +354,8 @@ pub struct RunningPty {
     // for idle-auto-suspend, shared by every connected client. See PtySession's
     // `last_active` for why this replaced a per-client guess.
     idle_ms: u64,
+    // See PtySession's `started_at_ms`.
+    started_at_ms: u64,
 }
 
 /// Kebab-case a display name into a valid worktree segment: lowercase, runs of
@@ -556,7 +597,12 @@ pub fn open_pty(
             incognito_dir,
             profile_id: profile_id.filter(|p| !p.is_empty()),
             last_active,
-            controller: None,
+            client_sizes: HashMap::new(),
+            pinned: None,
+            started_at_ms: SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0),
         },
     );
     Ok(())
@@ -586,38 +632,48 @@ pub fn resize_pty(
 ) -> Result<(), String> {
     let mut map = state.sessions.lock().map_err(|e| e.to_string())?;
     if let Some(session) = map.get_mut(&id) {
-        // First resize on a session claims it — so the common case (one viewer)
-        // works with zero setup. Once claimed, only the same client (or an
-        // explicit claim_control call) can resize it further.
-        if session.controller.is_none() {
-            session.controller = Some(client_id.clone());
-        }
-        if session.controller.as_deref() == Some(client_id.as_str()) {
-            session
-                .master
-                .resize(PtySize {
-                    rows,
-                    cols,
-                    pixel_width: 0,
-                    pixel_height: 0,
-                })
-                .map_err(|e| e.to_string())?;
+        session.client_sizes.insert(client_id.clone(), (cols, rows));
+        // Unpinned: every resize feeds the min-of-all computation. Pinned to
+        // someone else: still record the size above (so it's ready the moment
+        // that pin releases or moves here), but don't touch the real PTY.
+        let applies = session.pinned.as_deref().is_none_or(|p| p == client_id);
+        if applies {
+            apply_effective_size(session)?;
         }
     }
     Ok(())
 }
 
-/// Explicit "Take over display": force this client to become the session's
-/// resize controller regardless of who currently holds it. For when a
-/// different client's window size has been driving a shared session's PTY
-/// dimensions and you want your own to drive it instead.
+/// Explicit "Take over display": pin this client as the session's sole size
+/// driver regardless of the min-of-all computation, until it disconnects (see
+/// client_disconnected) or another client takes over instead.
 #[tauri::command]
 pub fn claim_control(state: State<PtyState>, id: String, client_id: String) -> Result<(), String> {
     let mut map = state.sessions.lock().map_err(|e| e.to_string())?;
     if let Some(session) = map.get_mut(&id) {
-        session.controller = Some(client_id);
+        session.pinned = Some(client_id);
+        apply_effective_size(session)?;
     }
     Ok(())
+}
+
+/// A client disconnected (its websocket closed — see webserver.rs's bridge()).
+/// Drop its claimed size from every session and release any pin it held,
+/// reverting those sessions to auto min-of-all sizing among whoever's left.
+pub fn client_disconnected(state: State<PtyState>, client_id: &str) {
+    let Ok(mut map) = state.sessions.lock() else {
+        return;
+    };
+    for session in map.values_mut() {
+        let had_size = session.client_sizes.remove(client_id).is_some();
+        let was_pinned = session.pinned.as_deref() == Some(client_id);
+        if was_pinned {
+            session.pinned = None;
+        }
+        if had_size || was_pinned {
+            let _ = apply_effective_size(session);
+        }
+    }
 }
 
 #[tauri::command]
@@ -657,6 +713,7 @@ pub fn running_ptys(state: State<PtyState>) -> Vec<RunningPty> {
                         .lock()
                         .map(|t| t.elapsed().as_millis() as u64)
                         .unwrap_or(0),
+                    started_at_ms: session.started_at_ms,
                 })
                 .collect()
         })

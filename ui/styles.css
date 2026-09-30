@@ -55,7 +55,18 @@ body {
 .window {
   display: flex;
   flex-direction: column;
-  height: 100vh;
+  height: 100vh; /* fallback for browsers without dvh support */
+  /* iOS Safari/Chrome (same WebKit engine) size vh against the LARGEST
+     possible viewport, as if the collapsible toolbar were always hidden — so
+     100vh runs behind it, cutting off whatever's at the bottom (the input
+     line) and leaving the terminal's own scrollback thinking it has more
+     visible rows than it actually does, with nothing left to scroll to reach
+     them. dvh tracks the real, currently-visible viewport as the toolbar
+     shows/hides. Widely supported (iOS 15.4+); the vh line above is the
+     fallback for anything older, harmless everywhere else since dvh == vh
+     when there's no dynamic browser chrome.
+  */
+  height: 100dvh;
   border: 1px solid var(--border);
   overflow: hidden;
 }
@@ -63,6 +74,23 @@ body {
 /* Flat edges when maximized (no desktop gap to delineate) */
 body.maximized .window {
   border: none;
+}
+
+/* Remote-only: Mandor is unreachable (a restart, a dropped tunnel) — see
+   setConnected() in app.js. Deliberately just a thin bar, not an overlay:
+   whatever's already rendered (sessions, terminal content) stays exactly as
+   it was rather than looking like it vanished. */
+#connection-banner {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 2000;
+  padding: 6px 12px;
+  background: var(--red);
+  color: #fff;
+  font-size: 12px;
+  text-align: center;
 }
 
 /* Titlebar (native decorations are off) */
@@ -806,6 +834,13 @@ body.dragging {
 .terminal-host {
   position: absolute;
   inset: 6px;
+}
+
+/* Brief confirmation for the mobile long-press-to-copy gesture — there's no
+   drag-selection highlight to give that feedback the way a mouse-drag does. */
+.terminal-host.copy-flash {
+  outline: 2px solid var(--accent);
+  outline-offset: -2px;
 }
 
 /* Optional programming ligatures (xterm's DOM renderer honors these on its text

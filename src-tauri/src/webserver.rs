@@ -33,7 +33,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path as AxumPath, State,
     },
-    http::StatusCode,
+    http::{StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -133,7 +133,15 @@ async fn asset_handler(uri: axum::http::Uri) -> Response {
         Some(file) => {
             let mime = mime_guess::from_path(path).first_or_octet_stream();
             (
-                [(axum::http::header::CONTENT_TYPE, mime.as_ref().to_string())],
+                [
+                    (axum::http::header::CONTENT_TYPE, mime.as_ref().to_string()),
+                    // No ETag/Last-Modified is set below, so with no explicit
+                    // directive here a browser's own heuristic caching (mobile
+                    // Safari/Chrome in particular) can go on serving a stale
+                    // app.js indefinitely across page loads, with no way to
+                    // tell it just happened — a real, previously-hit bug.
+                    (axum::http::header::CACHE_CONTROL, "no-store".to_string()),
+                ],
                 file.data.into_owned(),
             )
                 .into_response()
@@ -353,13 +361,21 @@ fn dirs_home() -> Option<PathBuf> {
 
 // --- WebSocket bridge: forwards pty-output / pty-exit / store-update ---
 
-async fn ws_handler(State(app): State<AppHandle>, ws: WebSocketUpgrade) -> Response {
-    ws.on_upgrade(move |socket| bridge(socket, app))
+async fn ws_handler(State(app): State<AppHandle>, uri: Uri, ws: WebSocketUpgrade) -> Response {
+    // Tags this connection with the same clientId resize_pty/claim_control use,
+    // so its claimed session sizes can be released (see pty::client_disconnected)
+    // the moment this socket closes — a real disconnect signal a stateless
+    // /api/invoke POST can't give us.
+    let client_id = uri
+        .query()
+        .and_then(|q| query_param(q, "clientId"))
+        .map(str::to_string);
+    ws.on_upgrade(move |socket| bridge(socket, app, client_id))
 }
 
 const BRIDGED_EVENTS: [&str; 3] = ["pty-output", "pty-exit", "store-update"];
 
-async fn bridge(socket: WebSocket, app: AppHandle) {
+async fn bridge(socket: WebSocket, app: AppHandle, client_id: Option<String>) {
     let (mut sender, mut receiver) = socket.split();
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<String>();
 
@@ -401,5 +417,8 @@ async fn bridge(socket: WebSocket, app: AppHandle) {
 
     for id in listener_ids {
         app.unlisten(id);
+    }
+    if let Some(client_id) = client_id {
+        pty::client_disconnected(app.state::<PtyState>(), &client_id);
     }
 }
