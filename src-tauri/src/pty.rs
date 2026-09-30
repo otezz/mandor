@@ -446,6 +446,16 @@ pub fn open_pty(
     cmd.cwd(&cwd);
     // Inherited env carries our merged PATH; TERM isn't inherited on a GUI launch.
     cmd.env("TERM", "xterm-256color");
+    // A Finder/Dock launch has no locale either, and without one macOS text tools
+    // (pbcopy — which claude uses to copy) read UTF-8 as Mac Roman: "é" → "√©".
+    // Like Terminal.app, supply a UTF-8 charset unless the user set a locale.
+    #[cfg(target_os = "macos")]
+    if ["LC_ALL", "LC_CTYPE", "LANG"]
+        .iter()
+        .all(|v| std::env::var_os(v).is_none())
+    {
+        cmd.env("LC_CTYPE", "UTF-8");
+    }
     // `claude agents` opens the background-agent manager (to attach to a bg agent
     // that plain --resume can't). It's a subcommand, so it must come first, and the
     // per-session flags below don't apply to it.
