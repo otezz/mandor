@@ -67,6 +67,17 @@ cargo check --manifest-path src-tauri/Cargo.toml
 bun run tauri build --bundles deb
 ```
 
+On macOS, sign local builds with a stable self-signed identity from the login
+keychain, so macOS privacy grants (Full Disk Access, folder access) survive
+rebuilds — an ad-hoc signature changes every build and resets them:
+
+```bash
+APPLE_SIGNING_IDENTITY="Mandor Local Signing" bun run tauri build --bundles app
+```
+
+It is an env var, not `signingIdentity` in config, because CI has no such
+certificate.
+
 Bump `version` in **both** `tauri.conf.json` and `src-tauri/Cargo.toml` (and
 `Cargo.lock` via `cargo update -p <pkg> --precise <v>`) before a rebuild. No
 auto-update.
