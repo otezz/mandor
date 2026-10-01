@@ -1547,29 +1547,117 @@ function positionSubmenus(container) {
 }
 
 function execCommandCopy(text) {
+  const prev = document.activeElement;
   const ta = document.createElement("textarea");
   ta.value = text;
   ta.style.cssText = "position:fixed;opacity:0";
   document.body.appendChild(ta);
   ta.select();
+  let ok = false;
   try {
-    document.execCommand("copy");
+    ok = document.execCommand("copy");
   } catch {
     /* ignore */
   }
   ta.remove();
+  prev?.focus?.(); // select() moved focus off the terminal's input
+  return ok;
 }
 
-function copyText(text) {
+// Resolves once the text is on the clipboard; rejects with the reason if it
+// couldn't be put there. Chrome can leave the async writeText() pending forever
+// on a page that isn't focused or visible (neither resolving nor rejecting, so
+// no fallback would ever run) — hence the timeout.
+async function copyText(text) {
   // navigator.clipboard is undefined outright (not just failing) on an insecure
   // origin — e.g. a remote browser over plain http://<lan-ip> — and `a?.b().c()`
   // short-circuits the whole chain including .catch(), so that case needs its
   // own branch rather than relying on the promise rejecting into the fallback.
   if (navigator.clipboard?.writeText) {
-    navigator.clipboard.writeText(text).catch(() => execCommandCopy(text));
-  } else {
-    execCommandCopy(text);
+    try {
+      await Promise.race([
+        navigator.clipboard.writeText(text),
+        new Promise((_, reject) =>
+          setTimeout(
+            () =>
+              reject(
+                new Error("the browser didn't respond (is the tab focused?)"),
+              ),
+            2000,
+          ),
+        ),
+      ]);
+      return;
+    } catch (e) {
+      if (execCommandCopy(text)) return;
+      throw e;
+    }
   }
+  if (!execCommandCopy(text)) throw new Error("the browser refused the copy");
+}
+
+let toastEl = null;
+let toastTimer = null;
+function showToast(msg, isError = false) {
+  if (!toastEl) {
+    toastEl = document.createElement("div");
+    toastEl.id = "toast";
+    document.body.appendChild(toastEl);
+  }
+  toastEl.textContent = msg;
+  toastEl.classList.toggle("error", isError);
+  toastEl.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(
+    () => {
+      toastEl.hidden = true;
+    },
+    isError ? 4000 : 1500,
+  );
+}
+
+// copyText plus a visible result: a copy that silently fails is
+// indistinguishable from one that worked until the moment you try to paste.
+async function copyWithFeedback(text) {
+  try {
+    await copyText(text);
+    showToast(`Copied ${text.length} characters`);
+  } catch (e) {
+    showToast(`Couldn't copy: ${e?.message || e}`, true);
+  }
+}
+
+// OSC 52 ("set clipboard"): `ESC ] 52 ; <targets> ; <base64> BEL`. This is how a
+// program in the terminal puts text on the *viewer's* clipboard. claude does
+// exactly that (alongside running a native clipboard tool on the machine it
+// runs on) whenever you select text in its UI or run /copy — and it prints "copied
+// N chars to clipboard" either way. The native tool only reaches the host's
+// clipboard, which is no use when you're looking at this through a browser, and
+// xterm.js ignores OSC 52 unless a handler is registered — so the copy
+// succeeded, on the wrong machine.
+const OSC52_MAX_CHARS = 1_000_000;
+function handleOsc52(data) {
+  const payload = data.slice(data.indexOf(";") + 1);
+  // "?" asks us to *report* the clipboard back to the program — never answer
+  // that, it would hand whatever you last copied to anything printing to the
+  // terminal.
+  if (data.indexOf(";") === -1 || !payload || payload === "?") return true;
+  let text;
+  try {
+    const bytes = Uint8Array.from(atob(payload), (c) => c.charCodeAt(0));
+    text = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+  } catch {
+    return true; // not valid base64/UTF-8 — ignore rather than copy garbage
+  }
+  if (!text) return true;
+  if (text.length > OSC52_MAX_CHARS) {
+    showToast("Ignored a terminal copy request over 1 MB", true);
+    return true;
+  }
+  // Shown every time (never silent): any program printing to the terminal can
+  // send this, including text from a file or web page claude was asked to read.
+  copyWithFeedback(text);
+  return true;
 }
 
 function openContextMenu(e, kind, id) {
@@ -1663,7 +1751,7 @@ function openContextMenu(e, kind, id) {
     }
     items.push({
       label: "Copy session ID",
-      run: () => copyText(s.id),
+      run: () => copyWithFeedback(s.id),
     });
     items.push({ sep: true });
     const moveTo = [
@@ -1925,7 +2013,7 @@ function setupLongPressCopy(term, el) {
           const line = buf.getLine(buf.viewportY + i);
           if (line) lines.push(line.translateToString(true));
         }
-        copyText(lines.join("\n"));
+        copyWithFeedback(lines.join("\n"));
         flashCopyFeedback(el);
       }, LONG_PRESS_MS);
     },
@@ -2143,6 +2231,7 @@ function attachTerminal(s) {
   );
   // (optional-chained: guard against older xterm builds without onBell)
   term.onBell?.(() => onBell(s));
+  term.parser.registerOscHandler(52, handleOsc52);
   // Opt-in, per-client (Settings → Behavior): copy a selection to the clipboard
   // the moment it's made, mirroring the classic X11-terminal convention — most
   // useful on a remote browser tab, where there's no native terminal copy
@@ -2150,7 +2239,7 @@ function attachTerminal(s) {
   term.onSelectionChange(() => {
     if (!copyOnSelect) return;
     const sel = term.getSelection();
-    if (sel) copyText(sel);
+    if (sel) copyWithFeedback(sel);
   });
 }
 

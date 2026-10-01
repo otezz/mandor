@@ -76,6 +76,30 @@ body.maximized .window {
   border: none;
 }
 
+/* Result of a copy, so one that silently fails isn't indistinguishable from
+   one that worked until you try to paste — see showToast() in app.js. */
+#toast {
+  position: fixed;
+  bottom: 18px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 2000;
+  max-width: calc(100vw - 32px);
+  padding: 7px 14px;
+  border-radius: 6px;
+  background: var(--accent-bg);
+  border: 1px solid var(--border);
+  color: var(--fg);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+#toast.error {
+  background: var(--red);
+  border-color: var(--red);
+  color: #fff;
+}
+
 /* Remote-only: Mandor is unreachable (a restart, a dropped tunnel) — see
    setConnected() in app.js. Deliberately just a thin bar, not an overlay:
    whatever's already rendered (sessions, terminal content) stays exactly as
