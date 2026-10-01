@@ -4,7 +4,7 @@
 // are re-implemented over fetch()/WebSocket with the identical call shape, so
 // every line below this point — the whole app — is unaware which one it's on.
 const IS_REMOTE = !window.__TAURI__;
-let invoke, listen, appWindow;
+let invoke, listen, appWindow, uploadFile;
 
 // crypto.randomUUID() needs a secure context (https:, or localhost/127.0.0.1) —
 // exactly what a remote browser reached over plain http on a LAN/Tailscale IP
@@ -87,6 +87,24 @@ if (!IS_REMOTE) {
     }
     const text = await res.text();
     return text ? JSON.parse(text) : undefined;
+  };
+
+  // Raw bytes, not multipart: the server writes the body straight to disk and
+  // answers with the absolute path claude can read it from.
+  uploadFile = async (file) => {
+    const res = await fetch(
+      withToken(`/api/upload?name=${encodeURIComponent(file.name)}`),
+      { method: "POST", body: file },
+    );
+    const body = await res.json().catch(() => ({}));
+    if (!res.ok)
+      throw new Error(
+        body.error ||
+          (res.status === 413
+            ? "file is too large"
+            : `upload failed (HTTP ${res.status})`),
+      );
+    return body.path;
   };
 
   // One shared WebSocket fanned out to per-event-name listeners, matching
@@ -1598,7 +1616,7 @@ async function copyText(text) {
 
 let toastEl = null;
 let toastTimer = null;
-function showToast(msg, isError = false) {
+function showToast(msg, isError = false, ms = isError ? 4000 : 1500) {
   if (!toastEl) {
     toastEl = document.createElement("div");
     toastEl.id = "toast";
@@ -1608,12 +1626,9 @@ function showToast(msg, isError = false) {
   toastEl.classList.toggle("error", isError);
   toastEl.hidden = false;
   clearTimeout(toastTimer);
-  toastTimer = setTimeout(
-    () => {
-      toastEl.hidden = true;
-    },
-    isError ? 4000 : 1500,
-  );
+  toastTimer = setTimeout(() => {
+    toastEl.hidden = true;
+  }, ms);
 }
 
 // copyText plus a visible result: a copy that silently fails is
@@ -4132,11 +4147,98 @@ appWindow.onDragDropEvent((event) => {
   dropOverlay.hidden = true; // drop / leave / cancel
   if (p.type !== "drop" || !Array.isArray(p.paths) || !p.paths.length) return;
   if (!activeId) return;
-  const text =
-    p.paths.map((path) => (/\s/.test(path) ? `"${path}"` : path)).join(" ") +
-    " ";
-  invoke("write_pty", { id: activeId, data: text }).catch(() => {});
+  invoke("write_pty", {
+    id: activeId,
+    data: pathsToTerminalText(p.paths),
+  }).catch(() => {});
 });
+
+function pathsToTerminalText(paths) {
+  return (
+    paths.map((path) => (/\s/.test(path) ? `"${path}"` : path)).join(" ") + " "
+  );
+}
+
+// Browsers can't hand claude a local path, so a pasted/dropped/picked file is
+// uploaded to the host and its path is typed in — the same end result as the
+// desktop drop above. Paste (not raw write) so claude's bracketed-paste
+// handling sees it, which is what turns an image path into an attachment.
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+async function uploadAndInsert(fileList) {
+  const files = [...fileList];
+  const id = activeId;
+  if (!files.length) return;
+  if (!id) {
+    showToast("Open a session first", true);
+    return;
+  }
+  const paths = [];
+  const failures = [];
+  for (const [i, file] of files.entries()) {
+    if (file.size > MAX_UPLOAD_BYTES) {
+      failures.push(`${file.name} is over 50 MB`);
+      continue;
+    }
+    showToast(
+      `Uploading ${file.name} (${i + 1}/${files.length})…`,
+      false,
+      600000,
+    );
+    try {
+      paths.push(await uploadFile(file));
+    } catch (e) {
+      failures.push(`${file.name}: ${e?.message || e}`);
+    }
+  }
+  if (paths.length) {
+    const text = pathsToTerminalText(paths);
+    const term = sessions.get(id)?.term;
+    if (term) term.paste(text);
+    else invoke("write_pty", { id, data: text }).catch(() => {});
+  }
+  if (failures.length) showToast(failures.join("; "), true, 6000);
+  else showToast(`Added ${paths.length} file${paths.length > 1 ? "s" : ""}`);
+}
+
+if (IS_REMOTE) {
+  const uploadBtn = document.getElementById("upload-btn");
+  const uploadInput = document.getElementById("upload-input");
+  uploadBtn.hidden = false;
+  uploadBtn.addEventListener("click", () => uploadInput.click());
+  uploadInput.addEventListener("change", () => {
+    uploadAndInsert(uploadInput.files);
+    uploadInput.value = "";
+  });
+
+  // Capture phase so we run before xterm's own paste handler, which would
+  // otherwise swallow a file paste as an empty text paste.
+  termsEl.addEventListener(
+    "paste",
+    (e) => {
+      if (!e.clipboardData?.files.length) return;
+      e.preventDefault();
+      e.stopPropagation();
+      uploadAndInsert(e.clipboardData.files);
+    },
+    true,
+  );
+
+  const hasFiles = (e) => e.dataTransfer?.types.includes("Files");
+  document.addEventListener("dragover", (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dropOverlay.hidden = !activeId;
+  });
+  document.addEventListener("dragleave", (e) => {
+    if (!e.relatedTarget) dropOverlay.hidden = true;
+  });
+  document.addEventListener("drop", (e) => {
+    if (!hasFiles(e)) return;
+    e.preventDefault();
+    dropOverlay.hidden = true;
+    uploadAndInsert(e.dataTransfer.files);
+  });
+}
 
 document
   .getElementById("new-session")

@@ -24,14 +24,17 @@
 //! autostart toggle, and switching to a different profile's window — none of
 //! those are meaningful from a browser tab.
 
+use std::collections::HashMap;
+use std::hash::{BuildHasher, Hasher};
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::time::{Duration, SystemTime};
 
 use axum::{
     body::Bytes,
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
-        Path as AxumPath, State,
+        DefaultBodyLimit, Path as AxumPath, Query, State,
     },
     http::{StatusCode, Uri},
     response::{IntoResponse, Response},
@@ -64,10 +67,14 @@ pub fn spawn(app: AppHandle, config: RemoteConfig) {
 }
 
 async fn run(app: AppHandle, config: RemoteConfig) -> Result<(), String> {
+    if let Some(dir) = uploads_dir() {
+        tauri::async_runtime::spawn_blocking(move || purge_old_uploads(&dir, UPLOAD_RETENTION));
+    }
     let token = config.token.trim().to_string();
     let router = Router::new()
         .route("/ws", get(ws_handler))
         .route("/api/invoke/{command}", post(invoke_handler))
+        .route("/api/upload", upload_route())
         .fallback(get(asset_handler))
         .layer(axum::middleware::from_fn(move |req, next| {
             check_token(token.clone(), req, next)
@@ -147,6 +154,136 @@ async fn asset_handler(uri: axum::http::Uri) -> Response {
                 .into_response()
         }
         None => (StatusCode::NOT_FOUND, "not found").into_response(),
+    }
+}
+
+// --- file uploads: browser paste / drop / picker -> a path claude can read ---
+
+const MAX_UPLOAD_BYTES: usize = 50 * 1024 * 1024;
+const UPLOAD_RETENTION: Duration = Duration::from_secs(14 * 24 * 60 * 60);
+
+fn uploads_dir() -> Option<PathBuf> {
+    pty::mandor_cache_dir().map(|c| c.join("uploads"))
+}
+
+fn upload_route<S: Clone + Send + Sync + 'static>() -> axum::routing::MethodRouter<S> {
+    post(upload_handler).layer(DefaultBodyLimit::max(MAX_UPLOAD_BYTES))
+}
+
+async fn upload_handler(Query(query): Query<HashMap<String, String>>, body: Bytes) -> Response {
+    if body.is_empty() {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({ "error": "empty upload" })),
+        )
+            .into_response();
+    }
+    let Some(dir) = uploads_dir() else {
+        return (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": "no cache directory" })),
+        )
+            .into_response();
+    };
+    let name = query.get("name").cloned().unwrap_or_default();
+    let saved = tauri::async_runtime::spawn_blocking(move || {
+        purge_old_uploads(&dir, UPLOAD_RETENTION);
+        save_upload(&dir, &name, &body)
+    })
+    .await;
+    match saved {
+        Ok(Ok(path)) => Json(json!({ "path": path.to_string_lossy() })).into_response(),
+        Ok(Err(e)) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(json!({ "error": e.to_string() })),
+        )
+            .into_response(),
+    }
+}
+
+/// Reduce a client-supplied name to a safe single path component: no
+/// directories, no leading dot, and only characters that never need quoting
+/// when the path is typed into a terminal.
+fn sanitize_upload_name(raw: &str) -> String {
+    let base = raw.rsplit(['/', '\\']).next().unwrap_or("");
+    let cleaned: String = base
+        .chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect();
+    let name: String = cleaned.trim_start_matches('.').chars().take(100).collect();
+    if name.is_empty() {
+        "file".to_string()
+    } else {
+        name
+    }
+}
+
+/// Write `bytes` to a fresh, owner-only file in `dir`. The random prefix plus
+/// `create_new` means an upload can never overwrite or be confused with another.
+fn save_upload(dir: &Path, raw_name: &str, bytes: &[u8]) -> std::io::Result<PathBuf> {
+    use std::io::Write;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        std::fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)?;
+    }
+    #[cfg(not(unix))]
+    std::fs::create_dir_all(dir)?;
+
+    let name = sanitize_upload_name(raw_name);
+    loop {
+        let prefix = std::collections::hash_map::RandomState::new()
+            .build_hasher()
+            .finish();
+        let path = dir.join(format!("{prefix:016x}-{name}"));
+        let mut opts = std::fs::OpenOptions::new();
+        opts.write(true).create_new(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            opts.mode(0o600);
+        }
+        match opts.open(&path) {
+            Ok(mut f) => {
+                f.write_all(bytes)?;
+                return Ok(path);
+            }
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => return Err(e),
+        }
+    }
+}
+
+fn purge_old_uploads(dir: &Path, retention: Duration) {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let expired = entry
+            .metadata()
+            .ok()
+            .filter(|m| m.is_file())
+            .and_then(|m| m.modified().ok())
+            .and_then(|t| now.duration_since(t).ok())
+            .is_some_and(|age| age > retention);
+        if expired {
+            let _ = std::fs::remove_file(entry.path());
+        }
     }
 }
 
@@ -420,5 +557,120 @@ async fn bridge(socket: WebSocket, app: AppHandle, client_id: Option<String>) {
     }
     if let Some(client_id) = client_id {
         pty::client_disconnected(app.state::<PtyState>(), &client_id);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::io::{Read, Write};
+
+    fn scratch(tag: &str) -> PathBuf {
+        let dir =
+            std::env::temp_dir().join(format!("mandor-upload-test-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        dir
+    }
+
+    #[test]
+    fn sanitize_strips_directories_and_unsafe_chars() {
+        assert_eq!(sanitize_upload_name("report.xlsx"), "report.xlsx");
+        assert_eq!(sanitize_upload_name("../../etc/passwd"), "passwd");
+        assert_eq!(sanitize_upload_name("C:\\Users\\me\\a b.png"), "a_b.png");
+        assert_eq!(sanitize_upload_name("my file (1).png"), "my_file__1_.png");
+        assert_eq!(sanitize_upload_name(".bashrc"), "bashrc");
+        assert_eq!(sanitize_upload_name("..."), "file");
+        assert_eq!(sanitize_upload_name(""), "file");
+        assert_eq!(sanitize_upload_name("dir/"), "file");
+        assert_eq!(sanitize_upload_name("é.txt"), "_.txt");
+        assert_eq!(sanitize_upload_name(&"a".repeat(300)).len(), 100);
+    }
+
+    #[test]
+    fn save_never_overwrites_and_is_owner_only() {
+        let dir = scratch("save");
+        let a = save_upload(&dir, "x.txt", b"one").unwrap();
+        let b = save_upload(&dir, "x.txt", b"two").unwrap();
+        assert_ne!(a, b);
+        assert_eq!(std::fs::read(&a).unwrap(), b"one");
+        assert_eq!(std::fs::read(&b).unwrap(), b"two");
+        assert!(a.starts_with(&dir) && a.is_absolute());
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = |p: &Path| std::fs::metadata(p).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode(&a), 0o600);
+            assert_eq!(mode(&dir), 0o700);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn purge_removes_only_expired_files() {
+        let dir = scratch("purge");
+        let old = save_upload(&dir, "old.txt", b"x").unwrap();
+        let fresh = save_upload(&dir, "fresh.txt", b"x").unwrap();
+        let fifteen_days = Duration::from_secs(15 * 24 * 60 * 60);
+        std::fs::File::options()
+            .write(true)
+            .open(&old)
+            .unwrap()
+            .set_modified(SystemTime::now() - fifteen_days)
+            .unwrap();
+        purge_old_uploads(&dir, UPLOAD_RETENTION);
+        assert!(!old.exists());
+        assert!(fresh.exists());
+        purge_old_uploads(&dir.join("missing"), UPLOAD_RETENTION);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn post_upload(port: u16, query: &str, len: usize, body: &[u8]) -> String {
+        let mut s = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(
+            s,
+            "POST /api/upload{query} HTTP/1.1\r\nHost: x\r\nContent-Length: {len}\r\nConnection: close\r\n\r\n"
+        )
+        .unwrap();
+        let _ = s.write_all(body);
+        let mut out = String::new();
+        let _ = s.read_to_string(&mut out);
+        out
+    }
+
+    #[tokio::test]
+    async fn endpoint_saves_and_enforces_size_cap() {
+        let cache = scratch("endpoint");
+        std::env::set_var("XDG_CACHE_HOME", &cache);
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let router = Router::new().route("/api/upload", upload_route());
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+        let (ok, empty, big) = tokio::task::spawn_blocking(move || {
+            let ok = post_upload(port, "?name=..%2Fa%20b.txt", 5, b"hello");
+            let empty = post_upload(port, "?name=e.txt", 0, b"");
+            let big = post_upload(
+                port,
+                "?name=big.bin",
+                MAX_UPLOAD_BYTES + 1,
+                &vec![0u8; MAX_UPLOAD_BYTES + 1],
+            );
+            (ok, empty, big)
+        })
+        .await
+        .unwrap();
+
+        assert!(ok.starts_with("HTTP/1.1 200"), "{ok}");
+        let saved = std::fs::read_dir(cache.join("mandor").join("uploads"))
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap();
+        assert!(saved.file_name().to_string_lossy().ends_with("-a_b.txt"));
+        assert_eq!(std::fs::read(saved.path()).unwrap(), b"hello");
+        assert!(ok.contains(&*saved.path().to_string_lossy()), "{ok}");
+        assert!(empty.starts_with("HTTP/1.1 400"), "{empty}");
+        assert!(big.starts_with("HTTP/1.1 413"), "{big}");
+        let _ = std::fs::remove_dir_all(&cache);
     }
 }

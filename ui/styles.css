@@ -185,7 +185,8 @@ body.maximized .window {
   color: #f4b45a;
 }
 
-.attention-btn[hidden] {
+.attention-btn[hidden],
+#upload-btn[hidden] {
   display: none;
 }
 

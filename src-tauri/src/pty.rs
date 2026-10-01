@@ -91,14 +91,18 @@ fn apply_effective_size(session: &mut PtySession) -> Result<(), String> {
 /// (systemd-tmpfiles ages files out, reboots wipe it), which would corrupt a
 /// session left open for days; the cache dir is durable for as long as the app
 /// runs, and we delete it on close and sweep it on startup.
-fn incognito_base() -> Option<PathBuf> {
+pub fn mandor_cache_dir() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     let cache = std::env::var_os("HOME").map(|h| PathBuf::from(h).join("Library").join("Caches"));
     #[cfg(not(target_os = "macos"))]
     let cache = std::env::var_os("XDG_CACHE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")));
-    cache.map(|c| c.join("mandor").join("incognito"))
+    cache.map(|c| c.join("mandor"))
+}
+
+fn incognito_base() -> Option<PathBuf> {
+    mandor_cache_dir().map(|c| c.join("incognito"))
 }
 
 /// Where persistent per-profile config dirs live. Unlike incognito this is DURABLE
