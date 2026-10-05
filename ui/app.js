@@ -268,10 +268,13 @@ function appLabel() {
   return p ? `Mandor · ${p.name}` : "Mandor";
 }
 
-// Centered titlebar text: app label, plus the active session when there is one.
+// Titlebar: the app label heads the sidebar column; the active session's name
+// heads the content, next to the utilities that act on it.
 function updateTitle() {
   const s = sessions.get(activeId);
-  titleEl.textContent = s ? `${appLabel()} — ${s.name}` : appLabel();
+  document.getElementById("titlebar-app").textContent = appLabel();
+  titleEl.textContent = s ? s.name : "";
+  document.getElementById("open-editor-btn").disabled = !s;
 }
 
 // --- theming: data-driven registry (chrome vars + full 16-color terminal
@@ -4017,6 +4020,7 @@ document.addEventListener("keydown", (e) => {
   if (!closeModal.hidden) closeCloseModal();
   if (!wakeModal.hidden) closeWakeModal();
   if (!restartModal.hidden) closeRestartModal();
+  if (!quitModal.hidden) closeQuitModal();
   if (!attentionMenu.hidden) attentionMenu.hidden = true;
   if (!settingsModal.hidden) closeSettings();
   if (!newModal.hidden) {
@@ -4026,58 +4030,8 @@ document.addEventListener("keydown", (e) => {
   closeContextMenu();
 });
 
-// --- titlebar: app menu + window controls ---
-const appMenu = document.getElementById("app-menu");
-const appMenuBtn = document.getElementById("app-menu-btn");
-
-// Populate the app menu's "Open profile" item as a fly-out submenu (same
-// mechanism as the right-click "Move to group"). Re-reads the global registry so
-// profiles created in another window show up too.
-function buildAppMenuProfiles() {
-  loadProfiles();
-  const box = document.getElementById("app-menu-profiles");
-  box.replaceChildren();
-
-  const parent = document.createElement("div");
-  parent.className = "context-parent";
-  const btn = document.createElement("button");
-  btn.type = "button";
-  btn.className = "context-parent-btn";
-  const lbl = document.createElement("span");
-  lbl.textContent = "Open profile";
-  const chev = document.createElement("span");
-  chev.className = "context-chevron";
-  chev.textContent = "▸";
-  btn.append(lbl, chev);
-
-  const sub = document.createElement("div");
-  sub.className = "context-submenu";
-  for (const p of profiles) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.dataset.openProfile = p.id;
-    b.textContent = p.name + (p.id === PROFILE_ID ? "  ✓" : "");
-    sub.appendChild(b);
-  }
-  const nb = document.createElement("button");
-  nb.type = "button";
-  nb.dataset.action = "new-profile";
-  nb.textContent = "New profile…";
-  sub.appendChild(nb);
-
-  parent.append(btn, sub);
-  box.appendChild(parent);
-  positionSubmenus(box);
-}
-
-appMenuBtn.addEventListener("click", (e) => {
-  e.stopPropagation();
-  const opening = appMenu.hidden;
-  appMenu.hidden = !appMenu.hidden;
-  if (opening) buildAppMenuProfiles();
-});
+// --- titlebar window controls + sidebar footer actions ---
 document.addEventListener("click", () => {
-  appMenu.hidden = true;
   closeContextMenu();
   closeNsMenus();
   closeGroupModelMenus();
@@ -4085,34 +4039,42 @@ document.addEventListener("click", () => {
   setFontMenu.hidden = true;
   if (!POPOUT) attentionMenu.hidden = true;
 });
-appMenu.addEventListener("click", (e) => {
-  const btn = e.target.closest("button");
-  if (!btn) return;
-  const openId = btn.dataset.openProfile;
-  if (openId) {
-    appMenu.hidden = true;
-    const p = profiles.find((x) => x.id === openId);
-    invoke("open_profile_window", {
-      id: openId,
-      name: p?.name || "Profile",
-    }).catch((err) => console.error(err));
-    return;
-  }
-  const action = btn.dataset.action;
-  if (!action) return;
-  appMenu.hidden = true;
-  if (action === "new") openNewSession();
-  else if (action === "resume") openResume();
-  else if (action === "agents") openAgents();
-  else if (action === "group") createGroupAndRename();
-  else if (action === "new-profile") {
-    openSettings();
-    showSettingsSection("profiles");
-    const f = document.getElementById("set-profile-form");
-    f.hidden = false;
-    document.getElementById("set-profile-name").focus();
-  } else if (action === "settings") openSettings();
-  else if (action === "quit") invoke("quit_app");
+document
+  .getElementById("sidebar-settings")
+  .addEventListener("click", openSettings);
+document
+  .getElementById("sidebar-new-group")
+  .addEventListener("click", createGroupAndRename);
+// Quit stays one click away without the tray: GNOME shows no tray icon unless
+// the AppIndicator extension is installed, and closing only hides to tray.
+// Always confirmed — quitting stops every running session.
+const quitModal = document.getElementById("quit-modal");
+function closeQuitModal() {
+  quitModal.hidden = true;
+}
+document.getElementById("sidebar-quit").addEventListener("click", () => {
+  const live = [...sessions.values()].filter((x) => x.live);
+  const working = live.filter((x) => x.working).length;
+  document.getElementById("quit-msg").textContent = live.length
+    ? `${live.length} running session${live.length === 1 ? "" : "s"}${
+        working ? ` (${working} still working)` : ""
+      } will stop. You can resume them after reopening Mandor.`
+    : "No sessions are running.";
+  quitModal.hidden = false;
+  document.getElementById("quit-confirm").focus();
+});
+document
+  .getElementById("quit-cancel")
+  .addEventListener("click", closeQuitModal);
+document
+  .getElementById("quit-backdrop")
+  .addEventListener("click", closeQuitModal);
+document
+  .getElementById("quit-confirm")
+  .addEventListener("click", () => invoke("quit_app"));
+document.getElementById("open-editor-btn").addEventListener("click", () => {
+  const s = sessions.get(activeId);
+  if (s) openInEditor(s);
 });
 
 const MAX_ICON =
@@ -4126,6 +4088,12 @@ async function syncMaxIcon() {
   winMax.innerHTML = max ? RESTORE_ICON : MAX_ICON;
   winMax.title = max ? "Restore" : "Maximize";
   document.body.classList.toggle("maximized", max); // flatten the window border
+  // macOS hides the traffic lights in native full screen, so drop the space
+  // the titlebar keeps for them.
+  if (document.body.classList.contains("native-frame")) {
+    const full = await appWindow.isFullscreen().catch(() => false);
+    document.body.classList.toggle("fullscreen", full);
+  }
 }
 
 document

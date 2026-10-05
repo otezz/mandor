@@ -499,7 +499,7 @@ fn with_window_frame<'a, R: tauri::Runtime, M: Manager<R>>(
     return builder
         .title_bar_style(tauri::TitleBarStyle::Overlay)
         .hidden_title(true)
-        .traffic_light_position(tauri::LogicalPosition::new(14.0, 18.0));
+        .traffic_light_position(tauri::LogicalPosition::new(14.0, 20.0));
     #[cfg(not(target_os = "macos"))]
     builder.decorations(false)
 }

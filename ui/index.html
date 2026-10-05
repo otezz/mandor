@@ -15,39 +15,8 @@
   <body>
     <div class="window">
       <div class="titlebar" id="titlebar">
-        <div class="titlebar-left">
-          <div class="dropdown">
-            <button
-              id="app-menu-btn"
-              class="titlebar-menu-btn"
-              type="button"
-              title="Menu"
-              aria-label="Menu"
-            >
-              <svg
-                viewBox="0 0 14 14"
-                width="15"
-                height="15"
-                aria-hidden="true"
-              >
-                <path d="M1 3.5h12M1 7h12M1 10.5h12" />
-              </svg>
-            </button>
-            <div id="app-menu" class="dropdown-menu" hidden>
-              <button type="button" data-action="new">New session</button>
-              <button type="button" data-action="resume">
-                Resume session…
-              </button>
-              <button type="button" data-action="agents">
-                Background agents…
-              </button>
-              <button type="button" data-action="group">New group</button>
-              <div id="app-menu-profiles"></div>
-              <div class="dropdown-sep"></div>
-              <button type="button" data-action="settings">Settings</button>
-              <button type="button" data-action="quit">Quit Mandor</button>
-            </div>
-          </div>
+        <div class="titlebar-side">
+          <span id="titlebar-app" class="titlebar-app">Mandor</span>
           <button
             id="sidebar-toggle"
             class="titlebar-menu-btn"
@@ -57,102 +26,138 @@
           >
             «
           </button>
-          <div class="dropdown" id="attention-dropdown" hidden>
-            <button
-              id="attention-btn"
-              class="titlebar-menu-btn attention-btn"
-              type="button"
-              title="Sessions that need your attention"
-              aria-label="Sessions that need attention"
-            >
-              <svg
-                viewBox="0 0 16 16"
-                width="15"
-                height="15"
-                aria-hidden="true"
-              >
-                <path
-                  d="M8 1.5a4 4 0 0 0-4 4c0 3-1.2 4-1.2 4h10.4S12 8.5 12 5.5a4 4 0 0 0-4-4z"
-                />
-                <path d="M6.6 13a1.5 1.5 0 0 0 2.8 0" />
-              </svg>
-            </button>
-            <div id="attention-menu" class="dropdown-menu" hidden></div>
-          </div>
-          <button
-            id="upload-btn"
-            class="titlebar-menu-btn"
-            type="button"
-            title="Upload files to this session"
-            aria-label="Upload files"
-            hidden
-          >
-            📎
-          </button>
-          <input id="upload-input" type="file" multiple hidden />
         </div>
-        <span id="titlebar-title" class="titlebar-title">Mandor</span>
-        <div class="titlebar-controls">
-          <div id="titlebar-update" class="titlebar-update" hidden>
+        <div class="titlebar-main">
+          <span id="titlebar-title" class="titlebar-title"></span>
+          <div class="titlebar-utils">
+            <div class="dropdown" id="attention-dropdown" hidden>
+              <button
+                id="attention-btn"
+                class="titlebar-menu-btn attention-btn"
+                type="button"
+                title="Sessions that need your attention"
+                aria-label="Sessions that need attention"
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  width="15"
+                  height="15"
+                  aria-hidden="true"
+                >
+                  <path
+                    d="M8 1.5a4 4 0 0 0-4 4c0 3-1.2 4-1.2 4h10.4S12 8.5 12 5.5a4 4 0 0 0-4-4z"
+                  />
+                  <path d="M6.6 13a1.5 1.5 0 0 0 2.8 0" />
+                </svg>
+              </button>
+              <div id="attention-menu" class="dropdown-menu" hidden></div>
+            </div>
             <button
-              id="titlebar-update-restart"
-              class="titlebar-update-restart"
+              id="upload-btn"
+              class="titlebar-menu-btn"
               type="button"
-              title="Restart to apply the update"
+              title="Upload files to this session"
+              aria-label="Upload files"
+              hidden
+            >
+              📎
+            </button>
+            <input id="upload-input" type="file" multiple hidden />
+            <button
+              id="open-editor-btn"
+              class="titlebar-util-btn"
+              type="button"
+              title="Open this session's folder in your editor"
+              disabled
             >
               <svg
                 viewBox="0 0 16 16"
-                width="12"
-                height="12"
+                width="13"
+                height="13"
                 aria-hidden="true"
               >
-                <path d="M13.6 8a5.6 5.6 0 1 1-1.7-4M13.7 2.4V5.4H10.7" />
+                <path d="M9.5 2.5h4v4M13.5 2.5 7 9M11.5 9v4.5h-9v-9H7" />
               </svg>
-              Restart to update
-            </button>
-            <button
-              id="titlebar-update-dismiss"
-              class="titlebar-update-dismiss"
-              type="button"
-              title="Dismiss"
-              aria-label="Dismiss"
-            >
-              ✕
+              Open in editor
             </button>
           </div>
-          <button
-            id="win-min"
-            class="win-btn"
-            type="button"
-            title="Minimize"
-            aria-label="Minimize"
-          >
-            <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">
-              <path d="M1 8.5h8" />
-            </svg>
-          </button>
-          <button
-            id="win-max"
-            class="win-btn"
-            type="button"
-            title="Maximize"
-            aria-label="Maximize"
-          >
-            <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">
-              <rect x="1" y="1" width="8" height="8" rx="1" fill="none" />
-            </svg>
-          </button>
-          <button
-            id="win-close"
-            class="win-btn win-close"
-            type="button"
-            title="Close to tray"
-            aria-label="Close to tray"
-          >
-            <svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true">
-              <path d="M1 1l8 8M9 1l-8 8" />
-            </svg>
-          </button>
+          <div class="titlebar-controls">
+            <div id="titlebar-update" class="titlebar-update" hidden>
+              <button
+                id="titlebar-update-restart"
+                class="titlebar-update-restart"
+                type="button"
+                title="Restart to apply the update"
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  width="12"
+                  height="12"
+                  aria-hidden="true"
+                >
+                  <path d="M13.6 8a5.6 5.6 0 1 1-1.7-4M13.7 2.4V5.4H10.7" />
+                </svg>
+                Restart to update
+              </button>
+              <button
+                id="titlebar-update-dismiss"
+                class="titlebar-update-dismiss"
+                type="button"
+                title="Dismiss"
+                aria-label="Dismiss"
+              >
+                ✕
+              </button>
+            </div>
+            <button
+              id="win-min"
+              class="win-btn"
+              type="button"
+              title="Minimize"
+              aria-label="Minimize"
+            >
+              <svg
+                viewBox="0 0 10 10"
+                width="10"
+                height="10"
+                aria-hidden="true"
+              >
+                <path d="M1 8.5h8" />
+              </svg>
+            </button>
+            <button
+              id="win-max"
+              class="win-btn"
+              type="button"
+              title="Maximize"
+              aria-label="Maximize"
+            >
+              <svg
+                viewBox="0 0 10 10"
+                width="10"
+                height="10"
+                aria-hidden="true"
+              >
+                <rect x="1" y="1" width="8" height="8" rx="1" fill="none" />
+              </svg>
+            </button>
+            <button
+              id="win-close"
+              class="win-btn win-close"
+              type="button"
+              title="Close to tray"
+              aria-label="Close to tray"
+            >
+              <svg
+                viewBox="0 0 10 10"
+                width="10"
+                height="10"
+                aria-hidden="true"
+              >
+                <path d="M1 1l8 8M9 1l-8 8" />
+              </svg>
+            </button>
+          </div>
         </div>
       </div>
 
@@ -192,6 +197,63 @@
             </button>
           </div>
           <div id="session-list"></div>
+          <div class="sidebar-footer">
+            <button
+              id="sidebar-settings"
+              class="sidebar-footer-btn"
+              type="button"
+              title="Settings"
+              aria-label="Settings"
+            >
+              <svg
+                viewBox="0 0 16 16"
+                width="15"
+                height="15"
+                aria-hidden="true"
+              >
+                <circle cx="8" cy="8" r="4.4" />
+                <circle cx="8" cy="8" r="1.7" />
+                <path
+                  stroke-width="2.2"
+                  d="M8 3.6V1.9M8 12.4v1.7M12.4 8h1.7M3.6 8H1.9M11.1 4.9l1.2-1.2M3.7 12.3l1.2-1.2M11.1 11.1l1.2 1.2M3.7 3.7l1.2 1.2"
+                />
+              </svg>
+            </button>
+            <button
+              id="sidebar-new-group"
+              class="sidebar-footer-btn"
+              type="button"
+              title="New group"
+              aria-label="New group"
+            >
+              <svg
+                viewBox="0 0 16 16"
+                width="15"
+                height="15"
+                aria-hidden="true"
+              >
+                <path
+                  d="M1.8 4.2v8.1h12.4V5.6H8L6.6 3.8H2.2a.4.4 0 0 0-.4.4zM8 7.4v3.4M6.3 9.1h3.4"
+                />
+              </svg>
+            </button>
+            <button
+              id="sidebar-quit"
+              class="sidebar-footer-btn sidebar-quit"
+              type="button"
+              title="Quit Mandor"
+              aria-label="Quit Mandor"
+            >
+              <svg
+                viewBox="0 0 16 16"
+                width="15"
+                height="15"
+                aria-hidden="true"
+              >
+                <path d="M8 1.8v5.6M4.4 4.1a5.4 5.4 0 1 0 7.2 0" />
+              </svg>
+            </button>
+          </div>
         </aside>
         <main id="main">
           <div id="find-bar" class="find-bar" hidden>
@@ -455,6 +517,24 @@
           </button>
           <button id="restart-confirm" class="btn-primary" type="button">
             Restart
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="quit-modal" class="modal" hidden>
+      <div class="modal-backdrop" id="quit-backdrop"></div>
+      <div class="modal-box modal-form">
+        <div class="modal-header"><span>Quit Mandor?</span></div>
+        <div class="ns-fields">
+          <p id="quit-msg" class="close-msg">—</p>
+        </div>
+        <div class="modal-actions">
+          <button id="quit-cancel" class="btn-secondary" type="button">
+            Cancel
+          </button>
+          <button id="quit-confirm" class="btn-primary" type="button">
+            Quit
           </button>
         </div>
       </div>

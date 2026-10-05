@@ -117,33 +117,123 @@ body.maximized .window {
   text-align: center;
 }
 
-/* Titlebar (native decorations are off) */
+/* Titlebar (native decorations are off). Two zones: one over the sidebar (app
+   name, menu, sidebar toggle) that continues the sidebar column, and one over
+   the content (session name, utilities, window controls). */
 .titlebar {
   position: relative;
   display: flex;
   align-items: center;
   height: 36px;
-  background: var(--titlebar);
-  border-bottom: 1px solid var(--border);
   user-select: none;
   flex-shrink: 0;
 }
 
-.titlebar-left {
+.titlebar-side {
+  width: 240px; /* = #sidebar width, so the column edge lines up */
+  flex-shrink: 0;
   display: flex;
   align-items: center;
-  gap: 8px;
   align-self: stretch;
+  background: var(--bg-alt);
+  border-right: 1px solid var(--border);
 }
 
-.titlebar-left .dropdown {
+.titlebar-app {
+  flex: 1;
+  min-width: 0;
+  padding-left: 14px;
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.titlebar-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  padding-left: 14px;
+  background: var(--titlebar);
+  border-bottom: 1px solid var(--border);
+}
+
+/* Sidebar hidden (or a pop-out with none): the side zone shrinks to its
+   buttons and reads as part of the content titlebar. */
+body.sidebar-collapsed .titlebar-side,
+body.popout .titlebar-side {
+  width: auto;
+  background: var(--titlebar);
+  border-right: none;
+  border-bottom: 1px solid var(--border);
+}
+
+body.sidebar-collapsed .titlebar-app,
+body.popout .titlebar-side > * {
+  display: none;
+}
+
+.titlebar .dropdown {
   align-self: stretch;
   display: flex;
   position: relative;
 }
 
-.titlebar-left .dropdown[hidden] {
+.titlebar .dropdown[hidden] {
   display: none;
+}
+
+.titlebar-utils {
+  display: flex;
+  align-items: center;
+  align-self: stretch;
+  gap: 4px;
+  padding-right: 6px;
+}
+
+/* Utilities sit at the right edge, so their menus open leftwards. */
+.titlebar-utils .dropdown-menu {
+  left: auto;
+  right: 4px;
+}
+
+.titlebar-util-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 9px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-dim);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.titlebar-util-btn svg {
+  stroke: currentColor;
+  stroke-width: 1.4;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  fill: none;
+}
+
+.titlebar-util-btn:hover:not(:disabled) {
+  background: var(--accent-bg);
+  color: var(--fg);
+}
+
+.titlebar-util-btn:disabled {
+  opacity: 0.45;
+  cursor: default;
 }
 
 .titlebar-menu-btn {
@@ -201,12 +291,14 @@ body.maximized .window {
 }
 
 .titlebar-title {
-  position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  font-size: 12px;
+  flex: 1;
+  min-width: 0;
+  font-size: 12.5px;
   font-weight: 600;
-  color: var(--fg-dim);
+  color: var(--fg);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
   pointer-events: none;
 }
 
@@ -341,14 +433,6 @@ body.maximized .window {
   height: 1px;
   background: var(--border);
   margin: 4px 2px;
-}
-/* Fly-out parent button inside the app menu (Open profile) — flex so the chevron
-   sits at the right edge, like the right-click submenu parents. */
-#app-menu .context-parent-btn {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
 }
 
 /* App body */
@@ -486,6 +570,42 @@ body.maximized .window {
   padding: 6px;
   overflow-y: auto;
   flex: 1;
+}
+
+.sidebar-footer {
+  display: flex;
+  align-items: center;
+  padding: 6px;
+  border-top: 1px solid var(--border);
+}
+
+.sidebar-footer-btn {
+  width: 30px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-dim);
+  cursor: pointer;
+}
+
+.sidebar-footer-btn svg {
+  stroke: currentColor;
+  stroke-width: 1.3;
+  stroke-linecap: round;
+  fill: none;
+}
+
+.sidebar-footer-btn:hover {
+  background: var(--accent-bg);
+  color: var(--fg);
+}
+
+.sidebar-quit {
+  margin-left: auto;
 }
 
 /* Group headers */
@@ -1653,11 +1773,12 @@ body.sidebar-collapsed #sidebar {
 }
 
 /* Dev build: amber titlebar + label so it's never confused with the release */
-body.dev .titlebar {
+body.dev .titlebar-side,
+body.dev .titlebar-main {
   background: #5c3d10;
 }
 
-body.dev #titlebar-title::after {
+body.dev #titlebar-app::after {
   content: " · dev";
   color: #f4b45a;
   font-weight: 700;
@@ -1926,9 +2047,11 @@ body.dev #new-session {
    catches both a settings tab button and the section it opens, since both
    share the exact same attribute value. */
 body.remote .titlebar-controls,
+body.remote #open-editor-btn,
 body.remote #set-run-on-startup-row,
+body.remote #set-editor-row,
 body.remote [data-section="profiles"],
-body.remote #app-menu-profiles,
+body.remote #sidebar-quit,
 body.remote #set-bell-file-btn,
 body.remote [data-section="remote"] {
   display: none !important;
@@ -1943,8 +2066,11 @@ body.native-frame .resizer {
 body.native-frame .window {
   border: none;
 }
-body.native-frame .titlebar {
+body.native-frame .titlebar-side {
   padding-left: 76px;
+}
+body.native-frame.fullscreen .titlebar-side {
+  padding-left: 0;
 }
 
 .browse-list {
@@ -1956,10 +2082,6 @@ body.native-frame .titlebar {
 
 body.popout #sidebar {
   display: none;
-}
-
-body.popout .titlebar-left {
-  visibility: hidden;
 }
 
 /* Window resize grips (native decorations are off) */
