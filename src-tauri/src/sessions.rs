@@ -1,6 +1,6 @@
 use std::fs::File;
-use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
+use std::path::{Path, PathBuf};
 use std::time::UNIX_EPOCH;
 
 use serde::Serialize;
@@ -153,6 +153,53 @@ pub async fn session_pr(
     .map_err(|e| e.to_string())
 }
 
+/// The folder a session is actually working in: the last `cwd` its transcript
+/// recorded. The transcript is found by id across every project dir, because a
+/// `-w` session's lives under its worktree's path, not the folder it started in.
+#[tauri::command]
+pub async fn session_cwd(id: String, profile_id: Option<String>) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        find_transcript(&id, profile_id.as_deref())
+            .as_deref()
+            .and_then(last_cwd)
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+fn find_transcript(id: &str, profile_id: Option<&str>) -> Option<PathBuf> {
+    // A session id is a UUID; refuse anything else before it reaches a path.
+    if id.is_empty() || !id.chars().all(|c| c.is_ascii_hexdigit() || c == '-') {
+        return None;
+    }
+    let name = format!("{id}.jsonl");
+    std::fs::read_dir(projects_dir(profile_id)?)
+        .ok()?
+        .flatten()
+        .map(|dir| dir.path().join(&name))
+        .find(|p| p.is_file())
+}
+
+/// The last `cwd` in a transcript, reading only its tail — transcripts run to
+/// many MB, and every entry carries the cwd at the time it was written.
+fn last_cwd(path: &Path) -> Option<String> {
+    const TAIL_BYTES: u64 = 256 * 1024;
+    let mut file = File::open(path).ok()?;
+    let len = file.metadata().ok()?.len();
+    file.seek(SeekFrom::Start(len.saturating_sub(TAIL_BYTES)))
+        .ok()?;
+    let mut tail = Vec::new();
+    file.read_to_end(&mut tail).ok()?;
+    String::from_utf8_lossy(&tail)
+        .lines()
+        .rev()
+        .find_map(|line| {
+            let entry = serde_json::from_str::<Value>(line).ok()?;
+            let cwd = entry.get("cwd")?.as_str()?;
+            (!cwd.is_empty()).then(|| cwd.to_string())
+        })
+}
+
 /// Read a transcript for its cwd, first real user message, and the session's
 /// display name (`customTitle`, set via `-n` and stored on `custom-title`
 /// entries). cwd + preview are near the top; the name can appear much later, so
@@ -250,4 +297,65 @@ fn user_text(entry: &Value) -> Option<String> {
     }
     let one_line = trimmed.replace(['\n', '\t'], " ");
     Some(one_line.chars().take(PREVIEW_CHARS).collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{find_transcript, last_cwd};
+    use std::io::Write;
+
+    fn transcript(name: &str, body: &str) -> std::path::PathBuf {
+        let path =
+            std::env::temp_dir().join(format!("mandor-test-{}-{name}.jsonl", std::process::id()));
+        std::fs::File::create(&path)
+            .unwrap()
+            .write_all(body.as_bytes())
+            .unwrap();
+        path
+    }
+
+    #[test]
+    fn last_cwd_takes_the_latest_entry() {
+        let p = transcript(
+            "latest",
+            "{\"cwd\":\"/repo\",\"type\":\"user\"}\n\
+             {\"type\":\"custom-title\",\"customTitle\":\"x\"}\n\
+             {\"cwd\":\"/repo/.claude/worktrees/feat\",\"type\":\"assistant\"}\n\
+             {\"type\":\"summary\"}\n",
+        );
+        assert_eq!(
+            last_cwd(&p).as_deref(),
+            Some("/repo/.claude/worktrees/feat")
+        );
+        std::fs::remove_file(p).unwrap();
+    }
+
+    #[test]
+    fn last_cwd_reads_only_the_tail_of_a_large_transcript() {
+        // Old cwd far outside the tail window, new one at the end; the tail
+        // starts mid-line, which must be skipped rather than break parsing.
+        let filler = format!("{{\"type\":\"x\",\"pad\":\"{}\"}}\n", "a".repeat(1000));
+        let mut body = String::from("{\"cwd\":\"/old\"}\n");
+        for _ in 0..400 {
+            body.push_str(&filler);
+        }
+        body.push_str("{\"cwd\":\"/new\"}\n");
+        let p = transcript("large", &body);
+        assert_eq!(last_cwd(&p).as_deref(), Some("/new"));
+        std::fs::remove_file(p).unwrap();
+    }
+
+    #[test]
+    fn last_cwd_none_without_any_cwd() {
+        let p = transcript("none", "{\"type\":\"summary\"}\nnot json\n");
+        assert_eq!(last_cwd(&p), None);
+        std::fs::remove_file(p).unwrap();
+    }
+
+    #[test]
+    fn find_transcript_rejects_non_uuid_ids() {
+        for id in ["", "../etc/passwd", "a/b", "abc.jsonl", "x y"] {
+            assert_eq!(find_transcript(id, None), None, "id {id:?}");
+        }
+    }
 }

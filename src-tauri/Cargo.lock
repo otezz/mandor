@@ -2158,6 +2158,7 @@ dependencies = [
  "rust-embed",
  "serde",
  "serde_json",
+ "shell-words",
  "tauri",
  "tauri-build",
  "tauri-plugin-autostart",

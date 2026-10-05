@@ -31,6 +31,8 @@ tokio = { version = "1.53.1", features = ["sync", "rt", "macros"] }
 rust-embed = "8.12.0"
 futures-util = "0.3.34"
 mime_guess = "2.0.5"
+# Split the user's "open in editor" command line (quoted paths/args).
+shell-words = "1.1.1"
 
 # Linux: give dev (debug) builds a distinct Wayland app-id / X11 WM_CLASS so
 # they aren't grouped with an installed release build in the taskbar.

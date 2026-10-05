@@ -33,7 +33,7 @@ fn save_window_geometry(app: &tauri::AppHandle) {
         }
     }
 }
-use sessions::{list_sessions, session_pr};
+use sessions::{list_sessions, session_cwd, session_pr};
 
 /// Cache file for the resolved login-shell PATH (see `ensure_tools_on_path`), under
 /// the platform cache dir — mirrors `incognito_base`.
@@ -424,6 +424,71 @@ fn open_url(url: String) -> Result<(), String> {
     cmd.spawn().map(|_| ()).map_err(|e| e.to_string())
 }
 
+/// Open a folder in the user's editor (session menu → "Open in editor").
+/// `editor` is a command line such as `code`, `cursor` or `zed -n`; the folder is
+/// appended as the last argument. Blank means `code`.
+#[tauri::command]
+async fn open_in_editor(path: String, editor: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || launch_editor(&path, editor))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn launch_editor(path: &str, editor: Option<String>) -> Result<(), String> {
+    if !std::path::Path::new(path).is_dir() {
+        return Err(format!("folder not found: {path}"));
+    }
+    let editor = editor
+        .filter(|e| !e.trim().is_empty())
+        .unwrap_or_else(|| "code".into());
+    let mut words = shell_words::split(&editor).map_err(|e| format!("editor command: {e}"))?;
+    if words.is_empty() {
+        return Err("editor command is empty".into());
+    }
+    let program = words.remove(0);
+    // Windows editor launchers are .cmd shims, which only cmd can run.
+    #[cfg(target_os = "windows")]
+    let mut cmd = {
+        let mut c = std::process::Command::new("cmd");
+        c.args(["/C", &program]);
+        c
+    };
+    #[cfg(not(target_os = "windows"))]
+    let mut cmd = std::process::Command::new(&program);
+    cmd.args(&words)
+        .arg(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null());
+    let child = match cmd.spawn() {
+        Ok(child) => child,
+        // VS Code's `code` CLI is an optional extra install on macOS.
+        #[cfg(target_os = "macos")]
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound && program == "code" => {
+            let status = std::process::Command::new("open")
+                .args(["-a", "Visual Studio Code", path])
+                .status()
+                .map_err(|e| format!("couldn't open VS Code: {e}"))?;
+            return if status.success() {
+                Ok(())
+            } else {
+                Err("VS Code isn't installed — set your editor in Settings".into())
+            };
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            return Err(format!("editor command `{program}` not found on PATH"));
+        }
+        Err(e) => return Err(format!("couldn't run `{program}`: {e}")),
+    };
+    // Reap it once it exits (editor CLIs return quickly) so it doesn't linger
+    // as a zombie for the life of the app.
+    std::thread::spawn(move || {
+        let mut child = child;
+        let _ = child.wait();
+    });
+    Ok(())
+}
+
 /// Secondary windows get the same frame as the main window (see
 /// tauri.macos.conf.json): the custom titlebar everywhere, and on macOS native
 /// traffic lights too — a borderless NSWindow can't enter native full screen.
@@ -724,8 +789,10 @@ fn main() {
             app_info,
             notify,
             open_url,
+            open_in_editor,
             read_audio_data,
             session_pr,
+            session_cwd,
             open_session_window,
             open_profile_window,
             create_profile,
@@ -753,4 +820,32 @@ fn main() {
                 }
             }
         });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::launch_editor;
+
+    fn tmp() -> String {
+        std::env::temp_dir().to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn editor_rejects_missing_folder() {
+        let err = launch_editor("/definitely/not/a/folder", None).unwrap_err();
+        assert!(err.contains("folder not found"), "{err}");
+    }
+
+    #[test]
+    #[cfg(not(target_os = "windows"))] // there it runs via `cmd /C`
+    fn editor_reports_unknown_command() {
+        let err = launch_editor(&tmp(), Some("mandor-no-such-editor --flag".into())).unwrap_err();
+        assert!(err.contains("`mandor-no-such-editor` not found"), "{err}");
+    }
+
+    #[test]
+    fn editor_rejects_unbalanced_quotes() {
+        let err = launch_editor(&tmp(), Some("\"unterminated".into())).unwrap_err();
+        assert!(err.starts_with("editor command:"), "{err}");
+    }
 }

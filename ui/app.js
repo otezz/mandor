@@ -221,6 +221,7 @@ let settings = {
   theme: "frappe",
   defaultCwd: "",
   claudePath: "",
+  editorCommand: "", // "Open in editor" command; "" = code
   notifications: true,
   defaultModel: "",
   terminalFontSize: 11, // points (converted to px for xterm), like other terminals
@@ -1687,6 +1688,20 @@ function handleOsc52(data) {
   return true;
 }
 
+// The folder the session is actually in — for a -w session that's its worktree,
+// recorded in the transcript — falling back to the folder it was started in
+// (incognito sessions keep their transcript elsewhere).
+async function openInEditor(s) {
+  const cwd = await invoke("session_cwd", {
+    id: s.id,
+    profileId: PROFILE_ID,
+  }).catch(() => null);
+  invoke("open_in_editor", {
+    path: cwd || s.cwd,
+    editor: settings.editorCommand || null,
+  }).catch((e) => showToast(String(e), true));
+}
+
 function openContextMenu(e, kind, id) {
   closeContextMenu();
   const items = [];
@@ -1705,6 +1720,8 @@ function openContextMenu(e, kind, id) {
     });
     if (!IS_REMOTE) {
       items.push({ label: "Open in new window", run: () => popOutSession(id) });
+      // Desktop only: a remote viewer would get the editor opened on the host.
+      items.push({ label: "Open in editor", run: () => openInEditor(s) });
     }
     if (s.live) {
       // Resume can't pass --remote-control (the CLI would fail reconnecting to a
@@ -4977,6 +4994,7 @@ function openSettings() {
   document.getElementById("set-engine-ghostty").checked =
     terminalEngine === "ghostty";
   document.getElementById("set-claude-path").value = settings.claudePath;
+  document.getElementById("set-editor").value = settings.editorCommand || "";
   document.getElementById("set-fontsize").value =
     settings.terminalFontSize || 11;
   document.getElementById("set-copy-on-select").checked = copyOnSelect;
@@ -5142,6 +5160,10 @@ document.getElementById("set-theme-cancel").addEventListener("click", () => {
 document
   .getElementById("set-theme-save")
   .addEventListener("click", saveCustomTheme);
+document.getElementById("set-editor").addEventListener("change", (e) => {
+  settings.editorCommand = e.target.value.trim();
+  persist();
+});
 document.getElementById("set-claude-path").addEventListener("change", (e) => {
   settings.claudePath = e.target.value.trim();
   invoke("set_claude_path", { path: settings.claudePath || null }).catch(
