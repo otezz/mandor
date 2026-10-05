@@ -352,7 +352,6 @@ async fn dispatch(app: &AppHandle, command: &str, args: Value) -> Result<Value, 
                 flag(&args, "remoteControl"),
                 flag(&args, "incognito"),
                 opt_str(&args, "profileId"),
-                flag(&args, "agents"),
                 flag(&args, "yolo"),
             )?;
             Ok(Value::Null)

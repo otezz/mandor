@@ -678,7 +678,7 @@ function persist() {
   const sess = sessionOrder
     .map((id) => sessions.get(id))
     .filter(Boolean)
-    .filter((s) => !s.incognito && !s.agents) // incognito + agents-manager are ephemeral
+    .filter((s) => !s.incognito) // incognito sessions are ephemeral
     .map((s) => ({
       id: s.id,
       cwd: s.cwd,
@@ -898,7 +898,7 @@ function reconcileSessionsFromStore(remoteList) {
   }
   for (const id of [...sessionOrder]) {
     const s = sessions.get(id);
-    if (!s || s.incognito || s.agents) continue; // never shared, never pruned here
+    if (!s || s.incognito) continue; // never shared, never pruned here
     if (remoteIds.has(id)) continue;
     // Closed on another client — drop it here too (its claude is already gone).
     if (s.term) s.term.dispose();
@@ -1762,33 +1762,29 @@ function openContextMenu(e, kind, id) {
         run: () => suspendSession(id),
       });
     }
-    if (!s.agents) {
-      items.push({
-        label: "YOLO mode (skip permissions)",
-        current: !!s.wantYolo,
-        run: () => toggleYolo(id),
-      });
-      items.push({
-        label: s.live ? "Restart session" : "Start session",
-        run: () => restartSession(id),
-      });
-    }
-    if (!s.agents && !s.incognito) {
+    items.push({
+      label: "YOLO mode (skip permissions)",
+      current: !!s.wantYolo,
+      run: () => toggleYolo(id),
+    });
+    items.push({
+      label: s.live ? "Restart session" : "Start session",
+      run: () => restartSession(id),
+    });
+    if (!s.incognito) {
       items.push({
         label: "Never auto-suspend",
         current: !!s.noSuspend,
         run: () => toggleNoSuspend(id),
       });
     }
-    if (!s.agents) {
-      if (splitIds.includes(id)) {
-        items.push({
-          label: "Remove from split",
-          run: () => removeFromSplit(id),
-        });
-      } else if (splitIds.length < SPLIT_MAX) {
-        items.push({ label: "Add to split view", run: () => addToSplit(id) });
-      }
+    if (splitIds.includes(id)) {
+      items.push({
+        label: "Remove from split",
+        run: () => removeFromSplit(id),
+      });
+    } else if (splitIds.length < SPLIT_MAX) {
+      items.push({ label: "Add to split view", run: () => addToSplit(id) });
     }
     if (s.pr && s.pr.prUrl) {
       items.push({
@@ -1939,7 +1935,6 @@ function addSession(rec) {
     wantModel: rec.wantModel || "",
     wantRemote: !!rec.wantRemote,
     incognito: !!rec.incognito, // isolated config dir, nothing saved to disk
-    agents: !!rec.agents, // runs `claude agents` (background-agent manager), not a session
     pr: rec.pr || null, // { prNumber, prUrl } if claude opened a PR in it
     live: !!rec.live, // a PTY is running for this session
     suspended: !!rec.suspended, // memory freed; dormant until resumed (shows 💤)
@@ -2426,7 +2421,7 @@ const inStartupGrace = () => Date.now() - APP_START_MS < STARTUP_GRACE_MS;
 // Look up the session's PR from its transcript (claude records one when it runs
 // a PR git op). Refreshed when a turn ends, so a just-opened PR shows up soon.
 function refreshSessionPr(s) {
-  if (!s || s.incognito || s.agents) return; // no local transcript for these
+  if (!s || s.incognito) return; // no local transcript for these
   invoke("session_pr", { id: s.id, cwd: s.cwd, profileId: PROFILE_ID })
     .then((pr) => {
       if (JSON.stringify(pr ?? null) === JSON.stringify(s.pr ?? null)) return;
@@ -2473,7 +2468,7 @@ function markWorking(s, len = 0) {
     // not a real turn — ignore it (no dot, sound, or notification, and don't
     // consume the once-per-episode alert, so the first real turn still rings).
     const warming = Date.now() < (s.warmUntil || 0);
-    if (substantial && !warming && !s.agents) {
+    if (substantial && !warming) {
       if (s.id !== activeId) s.attention = true;
       // Alert once per episode; skip the sound/notification during the startup
       // grace so reconnecting sessions don't ring (the dot above still updates).
@@ -2631,8 +2626,8 @@ function onBell(s) {
   clearTimeout(s.turnTimer); // claude's bell is the precise end — cancel the debounce
   s.working = false;
   s.turnStart = null;
-  if (s.agents || Date.now() < (s.warmUntil || 0)) {
-    refreshBadge(s); // ignore bells during replay warmup / the agents manager
+  if (Date.now() < (s.warmUntil || 0)) {
+    refreshBadge(s); // ignore bells during replay warmup
     return;
   }
   if (s.id !== activeId) s.attention = true;
@@ -2689,13 +2684,9 @@ async function spawnSession(s) {
     remoteControl: false,
     incognito: !!s.incognito,
     profileId: PROFILE_ID, // this window's profile (null = default ~/.claude)
-    agents: !!s.agents, // runs `claude agents` instead of a session
     yolo: !!s.wantYolo, // skip permission prompts (fresh or resumed)
   };
-  if (s.agents) {
-    // Background-agent manager — no session id / resume; leave the session flags off.
-    s.warmUntil = Date.now() + BELL_WARMUP_MS; // its listing output isn't a real turn
-  } else if (s.spawnMode === "new") {
+  if (s.spawnMode === "new") {
     args.sessionId = s.id;
     args.name = s.name;
     args.worktree = s.wantWorktree;
@@ -2709,7 +2700,7 @@ async function spawnSession(s) {
     // registration and fail ("Couldn't reconnect… start a fresh session without
     // --resume"); enable it in-session via /remote-control instead.
   }
-  if (!s.agents) s.spawnMode = "resume"; // any later respawn resumes (agents re-runs agents)
+  s.spawnMode = "resume"; // any later respawn resumes
   s.spawning = true; // live here before the backend lists it — see syncRemoteLiveState
   try {
     await invoke("open_pty", args);
@@ -2770,7 +2761,7 @@ function renderView() {
 // Add a session as a split pane (entering split mode), materializing/resuming it.
 function addToSplit(id) {
   const s = sessions.get(id);
-  if (!s || s.agents) return;
+  if (!s) return;
   if (splitIds.includes(id)) {
     setFocusedPane(id);
     return;
@@ -2999,34 +2990,6 @@ function startSession(cwd, opts = {}) {
   setActive(id); // attaches, sizes, and spawns
 }
 
-// Open claude's background-agent manager (`claude agents`) in this window's
-// profile so you can attach to a session that was backgrounded — plain --resume
-// can't reach a bg agent. Ephemeral: not persisted, spawns `claude agents`.
-function openAgents() {
-  const cwd =
-    sessions.get(activeId)?.cwd ||
-    settings.defaultCwd ||
-    sessionOrder.map((id) => sessions.get(id)?.cwd).find(Boolean) ||
-    recentDirs[0];
-  if (!cwd) {
-    alert(
-      "Open a session (or set a default directory in Settings) first — the agents view needs a folder to launch in.",
-    );
-    return;
-  }
-  const id = newId();
-  addSession({
-    id,
-    cwd,
-    name: "Background agents",
-    spawnMode: "agents",
-    agents: true,
-    live: false,
-  });
-  renderSessionList();
-  setActive(id); // attaches + spawns `claude agents`
-}
-
 // Choose the session to focus when the active one goes away (closed, suspended,
 // popped out). Prefer an already-live session, then any non-suspended one; never
 // auto-focus a suspended session — setActive would re-spawn the claude its suspend
@@ -3107,10 +3070,9 @@ async function closeSession(id) {
 }
 
 // A session can be suspended only if killing its PTY is safely reversible into a
-// resumable pill: not a background-agent (can't --resume) and not incognito (its
-// config dir is deleted on close).
+// resumable pill: not incognito (its config dir is deleted on close).
 function canSuspend(s) {
-  return !!(s && s.live && !s.agents && !s.incognito);
+  return !!(s && s.live && !s.incognito);
 }
 
 // Exempt a session from idle auto-suspend (or un-exempt it). Manual suspend still
@@ -3139,7 +3101,7 @@ function toggleYolo(id) {
 // conversation, so changed flags (YOLO) take effect without losing history.
 async function restartSession(id) {
   const s = sessions.get(id);
-  if (!s || s.agents) return;
+  if (!s) return;
   if (s.live) {
     s.suspending = true; // an intentional close, not a crash
     try {
