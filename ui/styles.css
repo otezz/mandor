@@ -764,6 +764,22 @@ body.popout .titlebar-side > * {
   color: var(--red);
 }
 
+.s-suspend {
+  font-size: 11px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
+  opacity: 0;
+}
+
+.session-row:hover .s-suspend {
+  opacity: 0.6;
+}
+
+.session-row .s-suspend:hover {
+  opacity: 1;
+}
+
 /* Attention dot: a background session's claude rang the bell */
 .s-badge {
   width: 6px;

@@ -1284,6 +1284,18 @@ function buildRow(s) {
     });
     row.append(pr);
   }
+  // Quick suspend (same as the context menu's), shown on hover like close.
+  if (canSuspend(s)) {
+    const sus = document.createElement("span");
+    sus.className = "s-suspend";
+    sus.textContent = "💤";
+    sus.title = "Suspend (free memory) — resumable later";
+    sus.addEventListener("click", (e) => {
+      e.stopPropagation();
+      suspendSession(s.id);
+    });
+    row.append(sus);
+  }
   row.append(close);
 
   row.addEventListener("click", (e) => {
@@ -1321,7 +1333,7 @@ let justDragged = false; // set on drop so the ensuing click doesn't select/togg
 function dragStart(e, kind, id, el) {
   if (
     e.button !== 0 ||
-    e.target.closest(".s-close") ||
+    e.target.closest(".s-close, .s-suspend") ||
     e.target.isContentEditable
   )
     return;
