@@ -4118,18 +4118,20 @@ const restartModal = document.getElementById("restart-modal");
 function closeRestartModal() {
   restartModal.hidden = true;
 }
-// Restart only after warning if sessions are mid-task (restart stops all running
-// PTYs; they come back cold/resumable, but active work would be interrupted).
+// Always confirmed, like quit: restart stops every running PTY. They come back
+// cold/resumable, but active work is interrupted — so call that out.
 function requestRestart() {
-  const working = [...sessions.values()].filter((x) => x.live && x.working);
-  if (!working.length) {
-    invoke("restart_app").catch(() => {});
-    return;
-  }
-  const n = working.length;
-  document.getElementById("restart-msg").textContent =
-    `${n} session${n === 1 ? " is" : "s are"} still working. Restarting stops all running sessions — they can be resumed afterward, but in-progress work is interrupted. Restart now?`;
+  const live = [...sessions.values()].filter((x) => x.live);
+  const working = live.filter((x) => x.working).length;
+  document.getElementById("restart-msg").textContent = live.length
+    ? `${live.length} running session${live.length === 1 ? "" : "s"}${
+        working
+          ? ` (${working} still working — in-progress work is interrupted)`
+          : ""
+      } will stop. They can be resumed after the restart.`
+    : "No sessions are running.";
   restartModal.hidden = false;
+  document.getElementById("restart-confirm").focus();
 }
 if (!POPOUT) {
   document

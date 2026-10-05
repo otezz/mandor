@@ -1232,6 +1232,16 @@ body.engine-ghostty .xterm-only {
   display: none;
 }
 
+/* Forms stay top-anchored so they don't jump as their height changes; short
+   fixed-size confirmations sit in the middle. */
+.modal.modal-center {
+  align-items: center;
+}
+
+.modal.modal-center .modal-box {
+  margin: 0;
+}
+
 .modal-backdrop {
   position: fixed; /* cover the viewport even when .modal scrolls (tall box) */
   inset: 0;
