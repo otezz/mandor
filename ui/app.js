@@ -203,6 +203,18 @@ let sessionFilter = "all"; // sidebar filter: "all" | "live" | "attention"
 // Per-client (like activeId/viewMode above): a remote browser tab and the
 // desktop app may each want this on/off independently.
 let copyOnSelect = false;
+// Terminal engine: "xterm" (xterm.js) or experimental "ghostty" (ghostty-web,
+// Ghostty's VT core in WASM). Per-client like copyOnSelect, but it must be known
+// before the first terminal is created — pop-outs never load the store — so it
+// is read synchronously from its own localStorage key. Takes effect on reload.
+const ENGINE_KEY = "mandor-term.engine";
+let terminalEngine = "xterm";
+try {
+  if (localStorage.getItem(ENGINE_KEY) === "ghostty")
+    terminalEngine = "ghostty";
+} catch {
+  /* storage unavailable: keep xterm */
+}
 let appFocused = true;
 let notificationsEnabled = true;
 let settings = {
@@ -1935,6 +1947,8 @@ function terminalFontStack() {
 // Common programming ligatures (longest-first so e.g. "===" wins over "=="). The
 // joiner tells xterm to render each match as one run; the CSS enables the font's
 // contextual alternates so the ligature glyph actually forms (DOM renderer).
+// ghostty-web has no character joiner API, so ligatures are xterm-only.
+const ligaturesOn = () => !!settings.ligatures && terminalEngine === "xterm";
 const LIGATURE_RE =
   /<==>|<-->|-->|<--|<->|===|!==|<=>|\.\.\.|->|<-|=>|==|!=|>=|<=|&&|\|\||\|>|<\||\+\+|--|::|:=|\/\/|\/\*|\*\/|\*\*|<<|>>|\.\.|~>|<~|\?\?/g;
 function ligatureJoiner(text) {
@@ -2138,24 +2152,61 @@ function attachTerminal(s) {
   if (s.term) return;
   const el = document.createElement("div");
   el.className = "terminal-host";
-  if (settings.ligatures) el.classList.add("ligatures");
+  if (ligaturesOn()) el.classList.add("ligatures");
   el.style.display = "none";
   termsEl.appendChild(el);
-  const term = new Terminal({
+  const ghostty = terminalEngine === "ghostty";
+  const term = new (ghostty ? GhosttyWeb.Terminal : Terminal)({
     fontFamily: terminalFontStack(),
     fontSize: fontSizePx(),
-    cursorBlink: true,
+    // ghostty-web redraws the cursor row every frame while blinking — in every
+    // terminal, hidden ones too — which took ~a third of the main thread with
+    // 16 sessions and made typing lag.
+    cursorBlink: !ghostty,
     scrollback: 5000,
     scrollSensitivity: 3,
     fastScrollSensitivity: 6,
     allowProposedApi: true,
     theme: activeXtermTheme(),
   });
-  const fit = new FitAddon.FitAddon();
+  const fit = ghostty ? new GhosttyWeb.FitAddon() : new FitAddon.FitAddon();
   term.loadAddon(fit);
-  const search = new SearchAddon.SearchAddon();
-  term.loadAddon(search);
+  // ghostty-web has no search addon (and xterm's relies on xterm internals).
+  const search = ghostty ? null : new SearchAddon.SearchAddon();
+  if (search) term.loadAddon(search);
   term.open(el);
+  // A paste with no text (e.g. an image on the clipboard) still has to reach the
+  // app as an empty bracketed paste — claude takes that as its cue to read the
+  // image from the clipboard. xterm sends it; ghostty-web drops empty pastes.
+  if (ghostty) {
+    el.addEventListener(
+      "paste",
+      (e) => {
+        if (!e.clipboardData?.getData("text/plain")) term.paste("");
+      },
+      true,
+    );
+    // ghostty-web has no copy handler, so Cmd/Ctrl+C copied nothing. Serve the
+    // terminal selection on the copy event as xterm does; cancelling beforecopy
+    // is what makes WebKit enable Copy when there is no DOM selection.
+    el.addEventListener("beforecopy", (e) => {
+      if (term.hasSelection()) e.preventDefault();
+    });
+    el.addEventListener("copy", (e) => {
+      const sel = term.getSelection();
+      if (!sel || !e.clipboardData) return;
+      e.clipboardData.setData("text/plain", sel);
+      e.preventDefault();
+    });
+    // ghostty-web only does double-click (word); add triple-click (row).
+    el.addEventListener("click", (e) => {
+      const canvas = el.querySelector("canvas");
+      if (e.detail !== 3 || !canvas) return;
+      const r = canvas.getBoundingClientRect();
+      const row = Math.floor((e.clientY - r.top) / (r.height / term.rows));
+      term.selectLines(row, row);
+    });
+  }
   // Pane chrome (only shown in split view via CSS): a name label and a ✕ that
   // removes the pane from the split without closing the session. Clicking anywhere
   // in the host focuses that pane.
@@ -2178,7 +2229,9 @@ function attachTerminal(s) {
   });
   // Let app shortcuts reach the document handler instead of the PTY:
   // Ctrl/Cmd + , = - _  and  Ctrl/Cmd+Shift+F (find in session).
-  term.attachCustomKeyEventHandler((ev) => {
+  // Written to xterm's contract (false = don't handle); ghostty-web's is the
+  // inverse (true = don't handle), hence the negation below.
+  const keyHandler = (ev) => {
     // Shift+Enter → newline. Terminals send the same bytes for Enter and
     // Shift+Enter, and without an extended keyboard protocol (xterm.js has none)
     // claude can't distinguish key events — so inject a bare LF (0x0a), the byte
@@ -2213,8 +2266,11 @@ function attachTerminal(s) {
     )
       return false;
     return true;
-  });
-  search.onDidChangeResults((r) => {
+  };
+  term.attachCustomKeyEventHandler(
+    ghostty ? (ev) => !keyHandler(ev) : keyHandler,
+  );
+  search?.onDidChangeResults((r) => {
     if (s.id !== activeId) return;
     if (!r || r.resultCount === 0) {
       findCount.textContent = findInput.value ? "no results" : "";
@@ -2229,7 +2285,7 @@ function attachTerminal(s) {
   s.fit = fit;
   s.search = search;
   s.el = el;
-  s.ligatureJoinerId = settings.ligatures
+  s.ligatureJoinerId = ligaturesOn()
     ? term.registerCharacterJoiner(ligatureJoiner)
     : null;
   setupSelectionAutoscroll(s, el);
@@ -2246,7 +2302,8 @@ function attachTerminal(s) {
   );
   // (optional-chained: guard against older xterm builds without onBell)
   term.onBell?.(() => onBell(s));
-  term.parser.registerOscHandler(52, handleOsc52);
+  // ghostty-web exposes no parser hooks, so OSC 52 is xterm-only.
+  term.parser?.registerOscHandler(52, handleOsc52);
   // Opt-in, per-client (Settings → Behavior): copy a selection to the clipboard
   // the moment it's made, mirroring the classic X11-terminal convention — most
   // useful on a remote browser tab, where there's no native terminal copy
@@ -4619,11 +4676,11 @@ function applyTerminalFont() {
   for (const s of sessions.values()) {
     if (!s.term) continue;
     s.term.options.fontFamily = stack;
-    s.el?.classList.toggle("ligatures", !!settings.ligatures);
+    s.el?.classList.toggle("ligatures", ligaturesOn());
     // Match the ligature joiner to the setting (register/deregister once).
-    if (settings.ligatures && s.ligatureJoinerId == null) {
+    if (ligaturesOn() && s.ligatureJoinerId == null) {
       s.ligatureJoinerId = s.term.registerCharacterJoiner(ligatureJoiner);
-    } else if (!settings.ligatures && s.ligatureJoinerId != null) {
+    } else if (!ligaturesOn() && s.ligatureJoinerId != null) {
       s.term.deregisterCharacterJoiner(s.ligatureJoinerId);
       s.ligatureJoinerId = null;
     }
@@ -4917,6 +4974,8 @@ function openSettings() {
   setFontLabel.textContent = settings.terminalFont || "JetBrains Mono";
   setFontMenu.hidden = true;
   document.getElementById("set-ligatures").checked = !!settings.ligatures;
+  document.getElementById("set-engine-ghostty").checked =
+    terminalEngine === "ghostty";
   document.getElementById("set-claude-path").value = settings.claudePath;
   document.getElementById("set-fontsize").value =
     settings.terminalFontSize || 11;
@@ -5058,6 +5117,19 @@ document.getElementById("set-ligatures").addEventListener("change", (e) => {
   applyTerminalFont();
   persist();
 });
+// Swapping engines needs fresh terminals; a reload rebuilds them and reconnects
+// to the still-running PTYs (the backend keeps sessions alive across reloads).
+document
+  .getElementById("set-engine-ghostty")
+  .addEventListener("change", (e) => {
+    try {
+      localStorage.setItem(ENGINE_KEY, e.target.checked ? "ghostty" : "xterm");
+    } catch {
+      e.target.checked = !e.target.checked;
+      return;
+    }
+    location.reload();
+  });
 document.getElementById("set-add-theme").addEventListener("click", () => {
   const f = document.getElementById("set-theme-form");
   f.hidden = !f.hidden;
@@ -5229,7 +5301,7 @@ function runFind(prev) {
 }
 
 function openFind() {
-  if (!activeId) return;
+  if (!activeId || terminalEngine !== "xterm") return; // no search in ghostty-web
   findBar.hidden = false;
   findInput.focus();
   findInput.select();
@@ -5261,5 +5333,29 @@ document
   .addEventListener("click", () => runFind(true));
 document.getElementById("find-close").addEventListener("click", closeFind);
 
-if (POPOUT) runPopout();
-else restore();
+// Load and initialise ghostty-web before any terminal exists (its WASM must be
+// ready for `new Terminal`). Loaded only when chosen, so xterm mode pays nothing;
+// any failure falls back to xterm rather than leaving the window without terminals.
+async function prepareTerminalEngine() {
+  if (terminalEngine === "ghostty") {
+    try {
+      await new Promise((resolve, reject) => {
+        const el = document.createElement("script");
+        el.src = "vendor/ghostty-web.js";
+        el.onload = resolve;
+        el.onerror = reject;
+        document.head.append(el);
+      });
+      await GhosttyWeb.init();
+    } catch (e) {
+      console.error("ghostty-web failed to load; falling back to xterm.js", e);
+      terminalEngine = "xterm";
+    }
+  }
+  document.body.classList.toggle(
+    "engine-ghostty",
+    terminalEngine === "ghostty",
+  );
+}
+
+prepareTerminalEngine().then(() => (POPOUT ? runPopout() : restore()));

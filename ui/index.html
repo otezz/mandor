@@ -542,11 +542,20 @@
               />
               <span class="set-hint">Size in points.</span>
             </div>
-            <label class="set-check">
+            <label class="set-check xterm-only">
               <input id="set-ligatures" type="checkbox" />
               <span
                 >Enable programming ligatures (e.g. → ≥ != in fonts like
                 JetBrains Mono / Fira Code)</span
+              >
+            </label>
+            <label class="set-check">
+              <input id="set-engine-ghostty" type="checkbox" />
+              <span
+                >Use the Ghostty terminal engine — experimental (this device
+                only; reloads the window). Not yet supported: find in session,
+                ligatures, and theme changes on open terminals (they apply after
+                a reload)</span
               >
             </label>
             <div class="set-field">

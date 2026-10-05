@@ -146,6 +146,9 @@ Tauri v2 (Rust) · `portable-pty` for PTYs · vanilla JS/CSS frontend ·
   (free to use, no attribution required). Bundled as `ui/notification.mp3`
   (re-encoded to mono for size).
 - Terminal rendering: [`xterm.js`](https://xtermjs.org/) (vendored in `ui/vendor/`).
+- Experimental terminal engine: [`ghostty-web`](https://github.com/coder/ghostty-web)
+  (MIT; vendored in `ui/vendor/` with its license), wrapping
+  [Ghostty](https://ghostty.org/)'s terminal core compiled to WebAssembly.
 - Default terminal font: [JetBrains Mono](https://www.jetbrains.com/lp/mono/) (OFL).
 
 ## This is one person's workflow — fork it

@@ -868,6 +868,10 @@ body.dragging {
   outline-offset: -2px;
 }
 
+body.engine-ghostty .xterm-only {
+  display: none;
+}
+
 /* Optional programming ligatures (xterm's DOM renderer honors these on its text
    runs). Off by default; toggled per-terminal from Settings. */
 .terminal-host.ligatures .xterm,
