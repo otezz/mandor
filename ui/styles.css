@@ -1555,6 +1555,11 @@ body.engine-ghostty .xterm-only {
   margin-top: 8px;
 }
 
+/* display:flex above would otherwise override [hidden] (forms always open) */
+.set-theme-form[hidden] {
+  display: none;
+}
+
 .set-theme-paste {
   min-height: 120px;
   resize: vertical;
@@ -1879,32 +1884,207 @@ body.dev #new-session {
   background: var(--accent-bg);
 }
 
+/* Fixed header (section name + close) over a scrolling body, so the close
+   button never scrolls away. */
 .settings-content {
-  position: relative;
   flex: 1;
-  padding: 22px 24px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.settings-header {
+  flex: none;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 14px 16px 12px 24px;
+  border-bottom: 1px solid var(--border);
+}
+
+.settings-heading {
+  font-size: 14px;
+  font-weight: 700;
+  color: var(--fg);
+}
+
+.settings-body {
+  flex: 1;
   overflow-y: auto;
+  padding: 4px 24px 20px;
 }
 
 .settings-x {
-  position: absolute;
-  top: 12px;
-  right: 14px;
+  width: 26px;
+  height: 26px;
+  display: grid;
+  place-items: center;
   background: transparent;
   border: none;
+  border-radius: 6px;
   color: var(--fg-dim);
-  font-size: 15px;
+  font-size: 14px;
   cursor: pointer;
 }
 
 .settings-x:hover {
+  background: var(--accent-bg);
   color: var(--fg);
 }
 
 .settings-section {
   display: flex;
   flex-direction: column;
+}
+
+/* Sections of free-form blocks (lists, forms) rather than setting rows. */
+.settings-section.set-stack {
+  gap: 14px;
+  padding-top: 14px;
+}
+
+/* One setting per row: label + one-line hint on the left, control on the right. */
+.set-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
   gap: 18px;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border);
+}
+
+label.set-row {
+  cursor: pointer;
+}
+
+.settings-section > .set-row:last-child,
+.set-row-flat {
+  border-bottom: none;
+}
+
+.set-row-text {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.set-row .set-label {
+  font-size: 12.5px;
+  font-weight: 600;
+}
+
+/* A setting that only matters while the one above is on. */
+.set-sub {
+  padding-left: 18px;
+}
+
+.set-row.is-off {
+  opacity: 0.45;
+}
+
+.set-control,
+.set-control-text {
+  flex: none;
+  width: 220px;
+}
+
+.set-control-num {
+  flex: none;
+  width: 76px;
+}
+
+.set-control-btns {
+  flex: none;
+  display: flex;
+  gap: 6px;
+}
+
+.set-row .set-hint code {
+  white-space: nowrap;
+}
+
+.set-path {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.set-block {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 12px;
+}
+
+.set-intro {
+  padding: 12px 0 4px;
+  line-height: 1.5;
+}
+
+.set-actions {
+  display: flex;
+  justify-content: flex-end;
+  padding-top: 12px;
+}
+
+.set-tag {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--fg-dim);
+  vertical-align: 1px;
+}
+
+.set-tag-warn {
+  border-color: #f4b45a; /* same amber as the attention bell */
+  color: #f4b45a;
+}
+
+/* CSS-only toggle switch on a plain checkbox (keeps .checked / change events). */
+.set-switch {
+  -webkit-appearance: none;
+  appearance: none;
+  flex: none;
+  position: relative;
+  width: 32px;
+  height: 18px;
+  margin: 0;
+  border-radius: 9px;
+  background: var(--border);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.set-switch::before {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--fg-dim);
+  transition:
+    transform 0.15s,
+    background 0.15s;
+}
+
+.set-switch:checked {
+  background: var(--accent);
+}
+
+.set-switch:checked::before {
+  transform: translateX(14px);
+  background: #fff;
+}
+
+.set-switch:disabled {
+  cursor: default;
 }
 
 .settings-section[hidden] {

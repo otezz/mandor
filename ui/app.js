@@ -4687,11 +4687,28 @@ function setBellFileLabel() {
 }
 
 function showSettingsSection(section) {
-  for (const tab of settingsModal.querySelectorAll(".settings-tab"))
-    tab.classList.toggle("active", tab.dataset.section === section);
+  for (const tab of settingsModal.querySelectorAll(".settings-tab")) {
+    const on = tab.dataset.section === section;
+    tab.classList.toggle("active", on);
+    if (on)
+      document.getElementById("settings-heading").textContent =
+        tab.textContent.trim();
+  }
   for (const sec of settingsModal.querySelectorAll(".settings-section"))
     sec.hidden = sec.dataset.section !== section;
+  settingsModal.querySelector(".settings-body").scrollTop = 0;
 }
+
+// A row marked data-depends="<checkbox id>" only matters while that switch is
+// on: dim it and disable its controls otherwise.
+function syncSettingDeps() {
+  for (const row of settingsModal.querySelectorAll("[data-depends]")) {
+    const off = !document.getElementById(row.dataset.depends)?.checked;
+    row.classList.toggle("is-off", off);
+    for (const c of row.querySelectorAll("input, button")) c.disabled = off;
+  }
+}
+settingsModal.addEventListener("change", syncSettingDeps);
 
 // Ghost button used in the settings group manager.
 function ghostBtn(label, onClick) {
@@ -4967,7 +4984,8 @@ function openSettings() {
   renderCustomThemes();
   document.getElementById("set-theme-form").hidden = true;
   clearThemeForm();
-  showSettingsSection("appearance");
+  showSettingsSection("general");
+  syncSettingDeps();
   invoke("app_info")
     .then((info) => {
       document.getElementById("about-version").textContent = `v${info.version}`;
@@ -4990,6 +5008,7 @@ function loadRemoteSettings() {
       document.getElementById("set-remote-port").value = cfg.port || 7420;
       document.getElementById("set-remote-lan").checked = !!cfg.bindLan;
       document.getElementById("set-remote-token").value = cfg.token || "";
+      syncSettingDeps(); // the enabled switch just changed under its sub-rows
       const urlEl = document.getElementById("set-remote-url");
       if (cfg.enabled) {
         const tokenQs = cfg.token

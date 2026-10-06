@@ -548,12 +548,22 @@
           <button
             class="settings-tab active"
             type="button"
-            data-section="appearance"
+            data-section="general"
           >
+            General
+          </button>
+          <button class="settings-tab" type="button" data-section="appearance">
             Appearance
           </button>
-          <button class="settings-tab" type="button" data-section="behavior">
-            Behavior
+          <button class="settings-tab" type="button" data-section="sessions">
+            Sessions
+          </button>
+          <button
+            class="settings-tab"
+            type="button"
+            data-section="notifications"
+          >
+            Notifications
           </button>
           <button class="settings-tab" type="button" data-section="groups">
             Groups
@@ -561,372 +571,498 @@
           <button class="settings-tab" type="button" data-section="profiles">
             Profiles
           </button>
-          <button class="settings-tab" type="button" data-section="advanced">
-            Advanced
-          </button>
           <button
             class="settings-tab"
             type="button"
             data-section="remote"
             id="set-remote-tab"
           >
-            Remote
+            Remote access
+          </button>
+          <button class="settings-tab" type="button" data-section="advanced">
+            Advanced
           </button>
           <button class="settings-tab" type="button" data-section="about">
             About
           </button>
         </div>
         <div class="settings-content">
-          <button
-            id="settings-close"
-            class="settings-x"
-            type="button"
-            title="Close"
-          >
-            ✕
-          </button>
-
-          <section class="settings-section" data-section="appearance">
-            <div class="set-field">
-              <span class="set-label">Theme</span>
-              <div class="ns-dropdown">
-                <button id="set-theme-btn" class="ns-dd-btn" type="button">
-                  <span id="set-theme-label" class="ns-dd-label">Auto</span>
-                  <span class="ns-caret">▾</span>
-                </button>
-                <div id="set-theme-menu" class="ns-menu" hidden></div>
-              </div>
-            </div>
-            <div class="set-field">
-              <span class="set-label">Terminal font</span>
-              <div class="ns-dropdown">
-                <button id="set-font-btn" class="ns-dd-btn" type="button">
-                  <span id="set-font-label" class="ns-dd-label"
-                    >JetBrains Mono</span
-                  >
-                  <span class="ns-caret">▾</span>
-                </button>
-                <div id="set-font-menu" class="ns-menu" hidden></div>
-              </div>
-              <span class="set-hint">Installed monospace fonts.</span>
-            </div>
-            <div class="set-field">
-              <span class="set-label">Terminal font size</span>
-              <input
-                id="set-fontsize"
-                class="ns-input"
-                type="number"
-                min="6"
-                max="24"
-                step="1"
-              />
-              <span class="set-hint">Size in points.</span>
-            </div>
-            <label class="set-check xterm-only">
-              <input id="set-ligatures" type="checkbox" />
-              <span
-                >Enable programming ligatures (e.g. → ≥ != in fonts like
-                JetBrains Mono / Fira Code)</span
-              >
-            </label>
-            <label class="set-check">
-              <input id="set-engine-ghostty" type="checkbox" />
-              <span
-                >Use the Ghostty terminal engine — experimental (this device
-                only; reloads the window). Not yet supported: find in session,
-                ligatures, and theme changes on open terminals (they apply after
-                a reload)</span
-              >
-            </label>
-            <div class="set-field">
-              <span class="set-label">Custom themes</span>
-              <div id="set-custom-themes" class="set-custom-themes"></div>
-              <button id="set-add-theme" class="set-ghost" type="button">
-                + Add custom theme…
-              </button>
-              <div id="set-theme-form" class="set-theme-form" hidden>
+          <div class="settings-header">
+            <span id="settings-heading" class="settings-heading">General</span>
+            <button
+              id="settings-close"
+              class="settings-x"
+              type="button"
+              title="Close"
+              aria-label="Close"
+            >
+              ✕
+            </button>
+          </div>
+          <div class="settings-body">
+            <section class="settings-section" data-section="general">
+              <label class="set-row" id="set-run-on-startup-row">
+                <span class="set-row-text">
+                  <span class="set-label">Launch at login</span>
+                  <span class="set-hint">Start Mandor when you log in.</span>
+                </span>
                 <input
-                  id="set-theme-name"
+                  id="set-run-on-startup"
+                  class="set-switch"
+                  type="checkbox"
+                />
+              </label>
+              <label class="set-row">
+                <span class="set-row-text">
+                  <span class="set-label">Resume sessions after a restart</span>
+                  <span class="set-hint"
+                    >Reopens every session, one at a time to keep startup light.
+                    Remote control has to be re-enabled per session.</span
+                  >
+                </span>
+                <input
+                  id="set-resume-on-start"
+                  class="set-switch"
+                  type="checkbox"
+                />
+              </label>
+              <div class="set-row" id="set-editor-row">
+                <span class="set-row-text">
+                  <span class="set-label">Editor command</span>
+                  <span class="set-hint"
+                    >For “Open in editor”; the session's folder is added at the
+                    end. Blank uses VS Code.</span
+                  >
+                </span>
+                <input
+                  id="set-editor"
+                  class="ns-input set-control-text"
+                  type="text"
+                  spellcheck="false"
+                  placeholder="code"
+                />
+              </div>
+            </section>
+
+            <section class="settings-section" data-section="appearance" hidden>
+              <div class="set-row">
+                <span class="set-row-text">
+                  <span class="set-label">Theme</span>
+                </span>
+                <div class="ns-dropdown set-control">
+                  <button id="set-theme-btn" class="ns-dd-btn" type="button">
+                    <span id="set-theme-label" class="ns-dd-label">Auto</span>
+                    <span class="ns-caret">▾</span>
+                  </button>
+                  <div id="set-theme-menu" class="ns-menu" hidden></div>
+                </div>
+              </div>
+              <div class="set-row">
+                <span class="set-row-text">
+                  <span class="set-label">Terminal font</span>
+                  <span class="set-hint">Installed monospace fonts.</span>
+                </span>
+                <div class="ns-dropdown set-control">
+                  <button id="set-font-btn" class="ns-dd-btn" type="button">
+                    <span id="set-font-label" class="ns-dd-label"
+                      >JetBrains Mono</span
+                    >
+                    <span class="ns-caret">▾</span>
+                  </button>
+                  <div id="set-font-menu" class="ns-menu" hidden></div>
+                </div>
+              </div>
+              <div class="set-row">
+                <span class="set-row-text">
+                  <span class="set-label">Font size</span>
+                  <span class="set-hint">In points.</span>
+                </span>
+                <input
+                  id="set-fontsize"
+                  class="ns-input set-control-num"
+                  type="number"
+                  min="6"
+                  max="24"
+                  step="1"
+                />
+              </div>
+              <label class="set-row xterm-only">
+                <span class="set-row-text">
+                  <span class="set-label">Programming ligatures</span>
+                  <span class="set-hint"
+                    >Join → ≥ != and similar in fonts like JetBrains Mono or
+                    Fira Code.</span
+                  >
+                </span>
+                <input id="set-ligatures" class="set-switch" type="checkbox" />
+              </label>
+              <div class="set-block">
+                <div class="set-row set-row-flat">
+                  <span class="set-row-text">
+                    <span class="set-label">Custom themes</span>
+                    <span class="set-hint"
+                      >Paste a palette from a Ghostty theme file,
+                      terminalcolors.com or terminal.sexy.</span
+                    >
+                  </span>
+                  <button id="set-add-theme" class="set-ghost" type="button">
+                    + Add…
+                  </button>
+                </div>
+                <div id="set-custom-themes" class="set-custom-themes"></div>
+                <div id="set-theme-form" class="set-theme-form" hidden>
+                  <input
+                    id="set-theme-name"
+                    class="ns-input"
+                    type="text"
+                    spellcheck="false"
+                    placeholder="Theme name"
+                  />
+                  <textarea
+                    id="set-theme-paste"
+                    class="ns-input set-theme-paste"
+                    spellcheck="false"
+                    placeholder="Paste a Ghostty palette, e.g.&#10;palette = 0=#1d1f21&#10;palette = 1=#cc6566&#10;…&#10;background = #282c34&#10;foreground = #ffffff"
+                  ></textarea>
+                  <div id="set-theme-err" class="set-theme-err" hidden></div>
+                  <div class="set-theme-actions">
+                    <button
+                      id="set-theme-cancel"
+                      class="set-ghost"
+                      type="button"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      id="set-theme-save"
+                      class="set-ghost set-theme-save"
+                      type="button"
+                    >
+                      Add theme
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="settings-section" data-section="sessions" hidden>
+              <div class="set-row">
+                <span class="set-row-text">
+                  <span class="set-label">Default folder</span>
+                  <span id="set-defcwd" class="set-hint set-path"
+                    >— none —</span
+                  >
+                </span>
+                <span class="set-control-btns">
+                  <button id="set-defcwd-btn" class="set-ghost" type="button">
+                    Choose…
+                  </button>
+                  <button id="set-defcwd-clear" class="set-ghost" type="button">
+                    Clear
+                  </button>
+                </span>
+              </div>
+              <label class="set-row">
+                <span class="set-row-text">
+                  <span class="set-label">Remote control for new sessions</span>
+                  <span class="set-hint"
+                    >Start new sessions with <code>--remote-control</code>, so
+                    they're reachable from the Claude app.</span
+                  >
+                </span>
+                <input
+                  id="set-remote-default"
+                  class="set-switch"
+                  type="checkbox"
+                />
+              </label>
+              <label class="set-row">
+                <span class="set-row-text">
+                  <span class="set-label">Suspend idle sessions</span>
+                  <span class="set-hint"
+                    >Stops an idle session's <code>claude</code> to free memory;
+                    it stays in the sidebar and resumes on click. Skips the
+                    active, remote and incognito sessions.</span
+                  >
+                </span>
+                <input
+                  id="set-suspend-idle"
+                  class="set-switch"
+                  type="checkbox"
+                />
+              </label>
+              <div class="set-row set-sub" data-depends="set-suspend-idle">
+                <span class="set-row-text">
+                  <span class="set-label">Suspend after</span>
+                  <span class="set-hint">Hours without activity.</span>
+                </span>
+                <input
+                  id="set-suspend-hours"
+                  class="ns-input set-control-num"
+                  type="number"
+                  min="1"
+                  max="168"
+                  step="1"
+                />
+              </div>
+            </section>
+
+            <section
+              class="settings-section"
+              data-section="notifications"
+              hidden
+            >
+              <label class="set-row">
+                <span class="set-row-text">
+                  <span class="set-label">Desktop notifications</span>
+                  <span class="set-hint"
+                    >When a background session needs you and Mandor isn't
+                    focused.</span
+                  >
+                </span>
+                <input
+                  id="set-notifications"
+                  class="set-switch"
+                  type="checkbox"
+                />
+              </label>
+              <label class="set-row">
+                <span class="set-row-text">
+                  <span class="set-label">Bell sound</span>
+                  <span class="set-hint"
+                    >Play a sound when a session rings the bell, e.g. when
+                    Claude finishes a turn.</span
+                  >
+                </span>
+                <input id="set-bell-sound" class="set-switch" type="checkbox" />
+              </label>
+              <div class="set-row set-sub" data-depends="set-bell-sound">
+                <span class="set-row-text">
+                  <span class="set-label">Sound</span>
+                  <span id="set-bell-file" class="set-hint set-path"
+                    >Default sound</span
+                  >
+                </span>
+                <span class="set-control-btns">
+                  <button
+                    id="set-bell-file-btn"
+                    class="set-ghost"
+                    type="button"
+                  >
+                    Choose…
+                  </button>
+                  <button
+                    id="set-bell-file-clear"
+                    class="set-ghost"
+                    type="button"
+                  >
+                    Default
+                  </button>
+                </span>
+              </div>
+            </section>
+
+            <section
+              class="settings-section set-stack"
+              data-section="groups"
+              hidden
+            >
+              <div class="set-hint">
+                Groups auto-add new sessions started under their configured
+                folder.
+              </div>
+              <div id="set-groups" class="set-groups"></div>
+              <button id="set-add-group" class="set-ghost" type="button">
+                + New group
+              </button>
+            </section>
+
+            <section
+              class="settings-section set-stack"
+              data-section="profiles"
+              hidden
+            >
+              <div class="set-hint">
+                Each profile is a separate Claude login and config in its own
+                window — run a work and a personal subscription side by side.
+                Sessions and history stay isolated; nothing is written to your
+                default
+                <code>~/.claude</code>.
+              </div>
+              <div id="set-profiles" class="set-groups"></div>
+              <button id="set-add-profile" class="set-ghost" type="button">
+                + New profile
+              </button>
+              <div id="set-profile-form" class="set-theme-form" hidden>
+                <input
+                  id="set-profile-name"
                   class="ns-input"
                   type="text"
                   spellcheck="false"
-                  placeholder="Theme name"
+                  placeholder="Profile name (e.g. Personal)"
                 />
-                <textarea
-                  id="set-theme-paste"
-                  class="ns-input set-theme-paste"
-                  spellcheck="false"
-                  placeholder="Paste a Ghostty palette, e.g.&#10;palette = 0=#1d1f21&#10;palette = 1=#cc6566&#10;…&#10;background = #282c34&#10;foreground = #ffffff"
-                ></textarea>
-                <div id="set-theme-err" class="set-theme-err" hidden></div>
+                <label class="set-check">
+                  <input id="set-profile-copylogin" type="checkbox" />
+                  <span
+                    >Copy my current login (same account, separate history).
+                    Leave off to start logged-out and sign in with a different
+                    account.</span
+                  >
+                </label>
+                <div id="set-profile-err" class="set-theme-err" hidden></div>
                 <div class="set-theme-actions">
-                  <button id="set-theme-cancel" class="set-ghost" type="button">
+                  <button
+                    id="set-profile-cancel"
+                    class="set-ghost"
+                    type="button"
+                  >
                     Cancel
                   </button>
                   <button
-                    id="set-theme-save"
+                    id="set-profile-create"
                     class="set-ghost set-theme-save"
                     type="button"
                   >
-                    Add theme
+                    Create &amp; open
                   </button>
                 </div>
-                <span class="set-hint"
-                  >Copy palettes from Ghostty theme files, terminalcolors.com,
-                  or terminal.sexy.</span
-                >
               </div>
-            </div>
-          </section>
+            </section>
 
-          <section class="settings-section" data-section="behavior" hidden>
-            <label class="set-check" id="set-run-on-startup-row">
-              <input id="set-run-on-startup" type="checkbox" />
-              <span>Launch Mandor automatically when you log in</span>
-            </label>
-            <label class="set-check">
-              <input id="set-resume-on-start" type="checkbox" />
-              <span
-                >Resume all sessions after a full restart (started one-by-one to
-                keep startup light; remote control must be re-enabled
-                per-session)</span
-              >
-            </label>
-            <label class="set-check">
-              <input id="set-suspend-idle" type="checkbox" />
-              <span
-                >Suspend idle sessions to free memory — an inactive session's
-                <code>claude</code> is stopped and it becomes a resumable pill
-                in the sidebar (click to resume; in-flight state is lost,
-                history is kept). Skips the active, remote, and incognito
-                sessions.</span
-              >
-            </label>
-            <div class="set-field">
-              <span class="set-label">Suspend after (hours idle)</span>
-              <input
-                id="set-suspend-hours"
-                class="ns-input"
-                type="number"
-                min="1"
-                max="168"
-                step="1"
-              />
-              <span class="set-hint"
-                >Only applies while “Suspend idle sessions” is on.</span
-              >
-            </div>
-            <label class="set-check">
-              <input id="set-copy-on-select" type="checkbox" />
-              <span
-                >Copy selected terminal text to the clipboard automatically
-                (this device only — most useful in a remote browser tab, which
-                has no native terminal copy shortcut)</span
-              >
-            </label>
-            <label class="set-check">
-              <input id="set-notifications" type="checkbox" />
-              <span
-                >Desktop notification when a background session needs attention
-                and the window is unfocused</span
-              >
-            </label>
-            <label class="set-check">
-              <input id="set-bell-sound" type="checkbox" />
-              <span
-                >Play a sound when a session rings the terminal bell (e.g.
-                claude's end-of-turn bell)</span
-              >
-            </label>
-            <div class="set-field">
-              <span class="set-label">Bell sound</span>
-              <div class="set-dir-row">
-                <span id="set-bell-file" class="set-dir-path"
-                  >Default sound</span
-                >
-                <button id="set-bell-file-btn" class="set-ghost" type="button">
-                  Choose…
-                </button>
-                <button
-                  id="set-bell-file-clear"
-                  class="set-ghost"
-                  type="button"
-                >
-                  Default
-                </button>
+            <section class="settings-section" data-section="remote" hidden>
+              <div class="set-hint set-intro">
+                Reach this machine's sessions from another device, through a
+                tunnel you already trust — an SSH port-forward, or
+                <code>tailscale serve</code> publishing this loopback port onto
+                your tailnet. Mandor never listens beyond
+                <code>127.0.0.1</code> itself; the tunnel is the whole security
+                boundary. <b>Changes take effect after restarting Mandor.</b>
               </div>
-              <span class="set-hint"
-                >Custom sound file (wav, mp3, ogg, flac…) played on the
-                bell.</span
-              >
-            </div>
-            <label class="set-check">
-              <input id="set-remote-default" type="checkbox" />
-              <span>Enable remote control for all new sessions by default</span>
-            </label>
-            <div class="set-field">
-              <span class="set-label">Default directory for new sessions</span>
-              <div class="set-dir-row">
-                <span id="set-defcwd" class="set-dir-path">— none —</span>
-                <button id="set-defcwd-btn" class="set-ghost" type="button">
-                  Choose…
-                </button>
-                <button id="set-defcwd-clear" class="set-ghost" type="button">
-                  Clear
-                </button>
-              </div>
-            </div>
-          </section>
-
-          <section class="settings-section" data-section="groups" hidden>
-            <div class="set-hint">
-              Groups auto-add new sessions started under their configured
-              folder.
-            </div>
-            <div id="set-groups" class="set-groups"></div>
-            <button id="set-add-group" class="set-ghost" type="button">
-              + New group
-            </button>
-          </section>
-
-          <section class="settings-section" data-section="profiles" hidden>
-            <div class="set-hint">
-              Each profile is a separate Claude login and config in its own
-              window — run a work and a personal subscription side by side.
-              Sessions and history stay isolated; nothing is written to your
-              default
-              <code>~/.claude</code>.
-            </div>
-            <div id="set-profiles" class="set-groups"></div>
-            <button id="set-add-profile" class="set-ghost" type="button">
-              + New profile
-            </button>
-            <div id="set-profile-form" class="set-theme-form" hidden>
-              <input
-                id="set-profile-name"
-                class="ns-input"
-                type="text"
-                spellcheck="false"
-                placeholder="Profile name (e.g. Personal)"
-              />
-              <label class="set-check">
-                <input id="set-profile-copylogin" type="checkbox" />
-                <span
-                  >Copy my current login (same account, separate history). Leave
-                  off to start logged-out and sign in with a different
-                  account.</span
-                >
+              <label class="set-row">
+                <span class="set-row-text">
+                  <span class="set-label">Allow remote access</span>
+                </span>
+                <input
+                  id="set-remote-enabled"
+                  class="set-switch"
+                  type="checkbox"
+                />
               </label>
-              <div id="set-profile-err" class="set-theme-err" hidden></div>
-              <div class="set-theme-actions">
-                <button id="set-profile-cancel" class="set-ghost" type="button">
-                  Cancel
-                </button>
-                <button
-                  id="set-profile-create"
-                  class="set-ghost set-theme-save"
-                  type="button"
-                >
-                  Create &amp; open
+              <div class="set-row set-sub" data-depends="set-remote-enabled">
+                <span class="set-row-text">
+                  <span class="set-label">Port</span>
+                </span>
+                <input
+                  id="set-remote-port"
+                  class="ns-input set-control-num"
+                  type="number"
+                  min="1024"
+                  max="65535"
+                  step="1"
+                />
+              </div>
+              <label class="set-row set-sub" data-depends="set-remote-enabled">
+                <span class="set-row-text">
+                  <span class="set-label danger-check">Allow LAN access</span>
+                  <span class="set-hint"
+                    >Reachable at this machine's LAN IP by
+                    <i>any device on this network</i>, with no tunnel. Set an
+                    access token if you turn this on.</span
+                  >
+                </span>
+                <input id="set-remote-lan" class="set-switch" type="checkbox" />
+              </label>
+              <div class="set-row set-sub" data-depends="set-remote-enabled">
+                <span class="set-row-text">
+                  <span class="set-label">Access token</span>
+                  <span class="set-hint"
+                    >Optional. Every request must then carry
+                    <code>?token=…</code> — on top of the tunnel, not instead of
+                    it. Letters and digits only.</span
+                  >
+                </span>
+                <input
+                  id="set-remote-token"
+                  class="ns-input set-control-text"
+                  type="text"
+                  spellcheck="false"
+                  placeholder="none"
+                />
+              </div>
+              <div id="set-remote-url" class="set-hint set-intro" hidden></div>
+              <div class="set-actions">
+                <button id="set-remote-save" class="set-ghost" type="button">
+                  Save
                 </button>
               </div>
-            </div>
-          </section>
+            </section>
 
-          <section class="settings-section" data-section="advanced" hidden>
-            <div class="set-field">
-              <span class="set-label">Claude executable</span>
-              <input
-                id="set-claude-path"
-                class="ns-input"
-                type="text"
-                spellcheck="false"
-                placeholder="claude (found on PATH)"
-              />
-              <span class="set-hint"
-                >Full path to the claude binary. Leave blank to use the one on
-                your PATH.</span
-              >
-            </div>
-            <div class="set-field" id="set-editor-row">
-              <span class="set-label">Editor command</span>
-              <input
-                id="set-editor"
-                class="ns-input"
-                type="text"
-                spellcheck="false"
-                placeholder="code"
-              />
-              <span class="set-hint"
-                >Used by a session's "Open in editor" (right-click). The
-                session's folder is added at the end, e.g. cursor, zed, or idea.
-                Leave blank for VS Code.</span
-              >
-            </div>
-          </section>
+            <section class="settings-section" data-section="advanced" hidden>
+              <div class="set-row">
+                <span class="set-row-text">
+                  <span class="set-label">Claude executable</span>
+                  <span class="set-hint"
+                    >Full path to <code>claude</code>. Blank uses the one on
+                    your PATH.</span
+                  >
+                </span>
+                <input
+                  id="set-claude-path"
+                  class="ns-input set-control-text"
+                  type="text"
+                  spellcheck="false"
+                  placeholder="claude"
+                />
+              </div>
+              <label class="set-row">
+                <span class="set-row-text">
+                  <span class="set-label"
+                    >Copy on select
+                    <span class="set-tag">This device</span></span
+                  >
+                  <span class="set-hint"
+                    >Copy terminal text as soon as you select it. Most useful in
+                    a remote browser tab.</span
+                  >
+                </span>
+                <input
+                  id="set-copy-on-select"
+                  class="set-switch"
+                  type="checkbox"
+                />
+              </label>
+              <label class="set-row">
+                <span class="set-row-text">
+                  <span class="set-label"
+                    >Ghostty terminal engine
+                    <span class="set-tag">This device</span>
+                    <span class="set-tag set-tag-warn">Experimental</span></span
+                  >
+                  <span class="set-hint"
+                    >Reloads the window. Not yet supported: find in session,
+                    ligatures, and theme changes on open terminals.</span
+                  >
+                </span>
+                <input
+                  id="set-engine-ghostty"
+                  class="set-switch"
+                  type="checkbox"
+                />
+              </label>
+            </section>
 
-          <section class="settings-section" data-section="remote" hidden>
-            <div class="set-hint">
-              Reach this machine's sessions from another device, through a
-              tunnel you already trust — an SSH port-forward, or
-              <code>tailscale serve</code> publishing this loopback port onto
-              your tailnet. Mandor never listens beyond
-              <code>127.0.0.1</code> itself; the tunnel is the whole security
-              boundary. <b>Changing this requires restarting Mandor.</b>
-            </div>
-            <label class="set-check">
-              <input id="set-remote-enabled" type="checkbox" />
-              <span>Allow remote access</span>
-            </label>
-            <div class="set-field">
-              <span class="set-label">Port</span>
-              <input
-                id="set-remote-port"
-                class="ns-input"
-                type="number"
-                min="1024"
-                max="65535"
-                step="1"
-              />
-            </div>
-            <label class="set-check">
-              <input id="set-remote-lan" type="checkbox" />
-              <span class="danger-check"
-                >Allow LAN access — reachable at this machine's LAN IP by
-                <i>any device on this network</i>, with no tunnel at all. Off by
-                default: only a tunnel you run yourself (SSH,
-                <code>tailscale serve</code>) can reach it. Set an access token
-                below if you turn this on.</span
-              >
-            </label>
-            <div class="set-field">
-              <span class="set-label">Access token (optional)</span>
-              <input
-                id="set-remote-token"
-                class="ns-input"
-                type="text"
-                spellcheck="false"
-                placeholder="leave blank to rely on the tunnel alone"
-              />
-              <span class="set-hint"
-                >If set, every remote request must include it as
-                <code>?token=…</code> in the URL — defense-in-depth on top of
-                the tunnel, not a replacement for it. Alphanumeric only.</span
-              >
-            </div>
-            <div id="set-remote-url" class="set-hint" hidden></div>
-            <button id="set-remote-save" class="set-ghost" type="button">
-              Save
-            </button>
-          </section>
-
-          <section class="settings-section" data-section="about" hidden>
-            <div class="about-head">
-              <div class="about-name">Mandor</div>
-              <div id="about-version" class="about-version">v—</div>
-            </div>
-            <div id="about-desc" class="about-desc"></div>
-          </section>
+            <section
+              class="settings-section set-stack"
+              data-section="about"
+              hidden
+            >
+              <div class="about-head">
+                <div class="about-name">Mandor</div>
+                <div id="about-version" class="about-version">v—</div>
+              </div>
+              <div id="about-desc" class="about-desc"></div>
+            </section>
+          </div>
         </div>
       </div>
     </div>
