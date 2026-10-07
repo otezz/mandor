@@ -1707,10 +1707,20 @@ function handleOsc52(data) {
 // recorded in the transcript — falling back to the folder it was started in
 // (incognito sessions keep their transcript elsewhere).
 async function openInEditor(s) {
+  // A browser can't launch an editor on the host, so it opens VS Code in the
+  // browser (served by the host under /editor) instead. The tab is opened
+  // before the await below — browsers block window.open once the click's
+  // user gesture is spent.
+  const tab = IS_REMOTE ? window.open("", "_blank") : null;
   const cwd = await invoke("session_cwd", {
     id: s.id,
     profileId: PROFILE_ID,
   }).catch(() => null);
+  if (IS_REMOTE) {
+    if (!tab) return showToast("Allow pop-ups to open the editor", true);
+    tab.location.href = `/editor/?folder=${encodeURIComponent(cwd || s.cwd)}`;
+    return;
+  }
   invoke("open_in_editor", {
     path: cwd || s.cwd,
     editor: settings.editorCommand || null,
@@ -1735,9 +1745,8 @@ function openContextMenu(e, kind, id) {
     });
     if (!IS_REMOTE) {
       items.push({ label: "Open in new window", run: () => popOutSession(id) });
-      // Desktop only: a remote viewer would get the editor opened on the host.
-      items.push({ label: "Open in editor", run: () => openInEditor(s) });
     }
+    items.push({ label: "Open in editor", run: () => openInEditor(s) });
     if (s.live) {
       // Resume can't pass --remote-control (the CLI would fail reconnecting to a
       // dead registration), so enable it in-session — a fresh registration.
@@ -4046,6 +4055,9 @@ document
 document
   .getElementById("quit-confirm")
   .addEventListener("click", () => invoke("quit_app"));
+if (IS_REMOTE)
+  document.getElementById("open-editor-btn").title =
+    "Open this session's folder in VS Code in a new tab";
 document.getElementById("open-editor-btn").addEventListener("click", () => {
   const s = sessions.get(activeId);
   if (s) openInEditor(s);

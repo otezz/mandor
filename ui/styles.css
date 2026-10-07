@@ -2253,7 +2253,6 @@ label.set-row {
    catches both a settings tab button and the section it opens, since both
    share the exact same attribute value. */
 body.remote .titlebar-controls,
-body.remote #open-editor-btn,
 body.remote #set-run-on-startup-row,
 body.remote #set-editor-row,
 body.remote [data-section="profiles"],

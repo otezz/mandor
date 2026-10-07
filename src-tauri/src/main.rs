@@ -4,6 +4,7 @@
 mod pty;
 mod sessions;
 mod store;
+mod webeditor;
 mod webserver;
 
 use std::path::PathBuf;
@@ -654,6 +655,7 @@ fn main() {
                 .build(),
         )
         .manage(PtyState::default())
+        .manage(webeditor::WebEditor::default())
         .manage(store::StoreState::default())
         .manage(AppStartup {
             exe: std::env::current_exe().ok(),
@@ -817,6 +819,9 @@ fn main() {
             if let tauri::RunEvent::ExitRequested { .. } = event {
                 if let Some(state) = app.try_state::<PtyState>() {
                     state.kill_all();
+                }
+                if let Some(editor) = app.try_state::<webeditor::WebEditor>() {
+                    editor.stop();
                 }
             }
         });

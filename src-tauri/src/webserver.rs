@@ -71,7 +71,7 @@ async fn run(app: AppHandle, config: RemoteConfig) -> Result<(), String> {
         tauri::async_runtime::spawn_blocking(move || purge_old_uploads(&dir, UPLOAD_RETENTION));
     }
     let token = config.token.trim().to_string();
-    let router = Router::new()
+    let router = crate::webeditor::mount(Router::new(), editor_proxy)
         .route("/ws", get(ws_handler))
         .route("/api/invoke/{command}", post(invoke_handler))
         .route("/api/upload", upload_route())
@@ -164,6 +164,10 @@ const UPLOAD_RETENTION: Duration = Duration::from_secs(14 * 24 * 60 * 60);
 
 fn uploads_dir() -> Option<PathBuf> {
     pty::mandor_cache_dir().map(|c| c.join("uploads"))
+}
+
+async fn editor_proxy(State(app): State<AppHandle>, req: axum::extract::Request) -> Response {
+    crate::webeditor::proxy(app, req).await
 }
 
 fn upload_route<S: Clone + Send + Sync + 'static>() -> axum::routing::MethodRouter<S> {
