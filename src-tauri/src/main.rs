@@ -549,6 +549,12 @@ fn open_profile_window(app: tauri::AppHandle, id: String, name: String) -> Resul
     Ok(())
 }
 
+/// Reveal and focus the default window, e.g. when switching back from a profile window.
+#[tauri::command]
+fn show_main_window(app: tauri::AppHandle) {
+    show_main(&app);
+}
+
 /// Best-effort check for whether this process was launched by GNOME's autostart
 /// handling rather than a user action (app grid, tray, second instance).
 /// DESKTOP_AUTOSTART_ID (the freedesktop autostart-launch marker) isn't set by
@@ -797,6 +803,7 @@ fn main() {
             session_cwd,
             open_session_window,
             open_profile_window,
+            show_main_window,
             create_profile,
             delete_profile,
             open_pty,

@@ -2257,6 +2257,7 @@ body.remote #set-run-on-startup-row,
 body.remote #set-editor-row,
 body.remote [data-section="profiles"],
 body.remote #sidebar-quit,
+body.remote #sidebar-profiles,
 body.remote #set-bell-file-btn,
 body.remote [data-section="remote"] {
   display: none !important;

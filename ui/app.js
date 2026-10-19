@@ -1876,6 +1876,33 @@ function openContextMenu(e, kind, id) {
       danger: true,
       run: () => deleteGroup(id),
     });
+  } else if (kind === "profiles") {
+    loadProfiles();
+    items.push({
+      label: "Default",
+      current: !PROFILE_ID,
+      run: () => {
+        if (PROFILE_ID) invoke("show_main_window").catch(() => {});
+      },
+    });
+    for (const p of profiles) {
+      items.push({
+        label: p.name,
+        current: p.id === PROFILE_ID,
+        run: () =>
+          invoke("open_profile_window", { id: p.id, name: p.name }).catch(
+            () => {},
+          ),
+      });
+    }
+    items.push({ sep: true });
+    items.push({
+      label: "Manage profiles…",
+      run: () => {
+        openSettings();
+        showSettingsSection("profiles");
+      },
+    });
   } else if (kind === "ungrouped") {
     items.push({ label: "New session here", run: () => openNewSession(null) });
     items.push({ sep: true });
@@ -4028,6 +4055,11 @@ document
 document
   .getElementById("sidebar-new-group")
   .addEventListener("click", createGroupAndRename);
+document.getElementById("sidebar-profiles").addEventListener("click", (e) => {
+  e.stopPropagation(); // the document click handler would close the menu at once
+  const r = e.currentTarget.getBoundingClientRect();
+  openContextMenu({ clientX: r.left, clientY: r.top }, "profiles", null);
+});
 // Quit stays one click away without the tray: GNOME shows no tray icon unless
 // the AppIndicator extension is installed, and closing only hides to tray.
 // Always confirmed — quitting stops every running session.
