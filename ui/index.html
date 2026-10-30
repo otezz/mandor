@@ -64,6 +64,16 @@
             </button>
             <input id="upload-input" type="file" multiple hidden />
             <button
+              id="paste-btn"
+              class="titlebar-menu-btn"
+              type="button"
+              title="Paste into this session"
+              aria-label="Paste"
+              hidden
+            >
+              📋
+            </button>
+            <button
               id="open-editor-btn"
               class="titlebar-util-btn"
               type="button"
@@ -534,6 +544,29 @@
           </button>
           <button id="restart-confirm" class="btn-primary" type="button">
             Restart
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <div id="paste-modal" class="modal modal-center" hidden>
+      <div class="modal-backdrop" id="paste-backdrop"></div>
+      <div class="modal-box modal-form">
+        <div class="modal-header"><span>Paste into session</span></div>
+        <div class="ns-fields">
+          <textarea
+            id="paste-text"
+            class="ns-input paste-text"
+            spellcheck="false"
+            placeholder="Long-press here and choose Paste"
+          ></textarea>
+        </div>
+        <div class="modal-actions">
+          <button id="paste-cancel" class="btn-secondary" type="button">
+            Cancel
+          </button>
+          <button id="paste-confirm" class="btn-primary" type="button">
+            Paste
           </button>
         </div>
       </div>
