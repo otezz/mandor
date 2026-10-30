@@ -435,6 +435,83 @@ async fn open_in_editor(path: String, editor: Option<String>) -> Result<(), Stri
         .map_err(|e| e.to_string())?
 }
 
+/// GUI editors whose CLI opens a folder passed as its last argument.
+const KNOWN_EDITORS: &[(&str, &str)] = &[
+    ("VS Code", "code"),
+    ("VS Code Insiders", "code-insiders"),
+    ("VSCodium", "codium"),
+    ("Cursor", "cursor"),
+    ("Windsurf", "windsurf"),
+    ("Zed", "zed"),
+    ("Zed", "zeditor"), // the name some Linux distros package it under
+    ("Sublime Text", "subl"),
+    ("IntelliJ IDEA", "idea"),
+    ("WebStorm", "webstorm"),
+    ("PyCharm", "pycharm"),
+    ("PhpStorm", "phpstorm"),
+    ("GoLand", "goland"),
+    ("RustRover", "rustrover"),
+    ("Rider", "rider"),
+    ("CLion", "clion"),
+];
+
+#[derive(serde::Serialize)]
+struct Editor {
+    name: &'static str,
+    command: &'static str,
+}
+
+/// The known editors installed here, for the "Open in editor" dropdown.
+#[tauri::command]
+async fn detect_editors() -> Vec<Editor> {
+    tauri::async_runtime::spawn_blocking(|| {
+        let path = std::env::var_os("PATH").unwrap_or_default();
+        installed_editors(&std::env::split_paths(&path).collect::<Vec<_>>())
+    })
+    .await
+    .unwrap_or_default()
+}
+
+fn installed_editors(dirs: &[PathBuf]) -> Vec<Editor> {
+    let mut found: Vec<Editor> = Vec::new();
+    for &(name, command) in KNOWN_EDITORS {
+        if found.iter().any(|e| e.name == name) {
+            continue;
+        }
+        if dirs.iter().any(|d| is_program(d, command)) {
+            found.push(Editor { name, command });
+        }
+    }
+    // Without the optional `code` CLI, launch_editor still opens the app bundle.
+    #[cfg(target_os = "macos")]
+    if !found.iter().any(|e| e.command == "code")
+        && std::path::Path::new("/Applications/Visual Studio Code.app").exists()
+    {
+        found.insert(
+            0,
+            Editor {
+                name: "VS Code",
+                command: "code",
+            },
+        );
+    }
+    found
+}
+
+fn is_program(dir: &std::path::Path, name: &str) -> bool {
+    #[cfg(target_os = "windows")]
+    return ["exe", "cmd", "bat"]
+        .iter()
+        .any(|ext| dir.join(format!("{name}.{ext}")).is_file());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(dir.join(name))
+            .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+}
+
 fn launch_editor(path: &str, editor: Option<String>) -> Result<(), String> {
     if !std::path::Path::new(path).is_dir() {
         return Err(format!("folder not found: {path}"));
@@ -798,6 +875,7 @@ fn main() {
             notify,
             open_url,
             open_in_editor,
+            detect_editors,
             read_audio_data,
             session_pr,
             session_cwd,
@@ -836,10 +914,36 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::launch_editor;
+    use super::{installed_editors, launch_editor};
 
     fn tmp() -> String {
         std::env::temp_dir().to_string_lossy().into_owned()
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn detects_executable_editors_once_per_name() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("mandor-editors-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let make = |name: &str, mode: u32| {
+            let p = dir.join(name);
+            std::fs::write(&p, "").unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(mode)).unwrap();
+        };
+        make("zed", 0o755);
+        make("zeditor", 0o755);
+        make("cursor", 0o644); // not executable
+        make("unrelated", 0o755);
+        std::fs::create_dir(dir.join("subl")).unwrap(); // a directory, not a program
+        let found = installed_editors(&[dir.clone()]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let names: Vec<_> = found.iter().map(|e| (e.name, e.command)).collect();
+        #[cfg(not(target_os = "macos"))]
+        assert_eq!(names, [("Zed", "zed")]);
+        #[cfg(target_os = "macos")]
+        assert!(names.contains(&("Zed", "zed")) && !names.contains(&("Zed", "zeditor")));
     }
 
     #[test]

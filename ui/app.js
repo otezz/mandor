@@ -275,6 +275,7 @@ function updateTitle() {
   document.getElementById("titlebar-app").textContent = appLabel();
   titleEl.textContent = s ? s.name : "";
   document.getElementById("open-editor-btn").disabled = !s;
+  document.getElementById("editor-pick-btn").disabled = !s;
 }
 
 // --- theming: data-driven registry (chrome vars + full 16-color terminal
@@ -1726,6 +1727,42 @@ async function openInEditor(s) {
     path: cwd || s.cwd,
     editor: settings.editorCommand || null,
   }).catch((e) => showToast(String(e), true));
+}
+
+const editorMenu = document.getElementById("editor-menu");
+let detectedEditors = null; // fetched once, on the first open of the menu
+async function buildEditorMenu() {
+  detectedEditors ??= (await invoke("detect_editors").catch(() => null)) || [];
+  const current = settings.editorCommand || "code";
+  const items = [...detectedEditors];
+  if (!items.some((e) => e.command === current))
+    items.unshift({ name: current, command: current });
+  editorMenu.replaceChildren();
+  for (const ed of items) {
+    const b = document.createElement("button");
+    b.type = "button";
+    b.textContent = ed.name + (ed.command === current ? "  ✓" : "");
+    b.title = ed.command;
+    b.addEventListener("click", () => {
+      settings.editorCommand = ed.command;
+      persist();
+      const s = sessions.get(activeId);
+      if (s) openInEditor(s);
+    });
+    editorMenu.appendChild(b);
+  }
+  editorMenu.appendChild(
+    Object.assign(document.createElement("div"), { className: "dropdown-sep" }),
+  );
+  const custom = document.createElement("button");
+  custom.type = "button";
+  custom.textContent = "Custom command…";
+  custom.addEventListener("click", () => {
+    openSettings();
+    showSettingsSection("general");
+    document.getElementById("set-editor").focus();
+  });
+  editorMenu.appendChild(custom);
 }
 
 function openContextMenu(e, kind, id) {
@@ -4035,6 +4072,7 @@ document.addEventListener("keydown", (e) => {
   if (!quitModal.hidden) closeQuitModal();
   if (!pasteModal.hidden) closePasteModal();
   if (!attentionMenu.hidden) attentionMenu.hidden = true;
+  editorMenu.hidden = true;
   if (!settingsModal.hidden) closeSettings();
   if (!newModal.hidden) {
     if (!nsCwdMenu.hidden || !nsGroupMenu.hidden) closeNsMenus();
@@ -4051,6 +4089,7 @@ document.addEventListener("click", () => {
   setThemeMenu.hidden = true;
   setFontMenu.hidden = true;
   if (!POPOUT) attentionMenu.hidden = true;
+  editorMenu.hidden = true;
 });
 document
   .getElementById("sidebar-settings")
@@ -4097,6 +4136,14 @@ document.getElementById("open-editor-btn").addEventListener("click", () => {
   const s = sessions.get(activeId);
   if (s) openInEditor(s);
 });
+document
+  .getElementById("editor-pick-btn")
+  .addEventListener("click", async (e) => {
+    e.stopPropagation();
+    if (!editorMenu.hidden) return (editorMenu.hidden = true);
+    await buildEditorMenu();
+    editorMenu.hidden = false;
+  });
 
 const MAX_ICON =
   '<svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true"><rect x="1" y="1" width="8" height="8" rx="1" fill="none"/></svg>';
