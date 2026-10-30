@@ -2147,6 +2147,28 @@ label.set-row {
   border-radius: 8px;
 }
 
+.set-group-card {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.set-group-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.set-group-card .set-group-name-input {
+  flex: 1;
+  min-width: 0;
+}
+
+.set-group-card .set-group-model-btn {
+  min-width: 80px;
+}
+
 .set-group-name-input {
   flex: none;
   width: 120px;

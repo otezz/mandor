@@ -4789,7 +4789,7 @@ function renderSettingsGroups() {
   }
   for (const g of groups) {
     const row = document.createElement("div");
-    row.className = "set-group-row";
+    row.className = "set-group-row set-group-card";
     const name = document.createElement("input");
     name.className = "set-group-name-input";
     name.value = g.name;
@@ -4873,19 +4873,29 @@ function renderSettingsGroups() {
       persist();
     });
     worktree.append(worktreeBox, "Worktree");
-    row.append(
+    const settingsLine = document.createElement("div");
+    settingsLine.className = "set-group-line";
+    settingsLine.append(
       name,
       prefix,
-      dir,
       modelWrap,
       worktree,
+      ghostBtn("Delete", () => {
+        deleteGroup(g.id);
+        renderSettingsGroups();
+      }),
+    );
+    const folderLine = document.createElement("div");
+    folderLine.className = "set-group-line";
+    folderLine.append(
+      dir,
       ghostBtn(g.dir ? "Change" : "Set folder", async () => {
         await setGroupDir(g);
         renderSettingsGroups();
       }),
     );
     if (g.dir) {
-      row.append(
+      folderLine.append(
         ghostBtn("Clear", () => {
           g.dir = null;
           persist();
@@ -4894,12 +4904,7 @@ function renderSettingsGroups() {
         }),
       );
     }
-    row.append(
-      ghostBtn("Delete", () => {
-        deleteGroup(g.id);
-        renderSettingsGroups();
-      }),
-    );
+    row.append(settingsLine, folderLine);
     box.appendChild(row);
   }
 }
