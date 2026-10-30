@@ -4031,6 +4031,7 @@ document.addEventListener("keydown", (e) => {
   if (!wakeModal.hidden) closeWakeModal();
   if (!restartModal.hidden) closeRestartModal();
   if (!quitModal.hidden) closeQuitModal();
+  if (!pasteModal.hidden) closePasteModal();
   if (!attentionMenu.hidden) attentionMenu.hidden = true;
   if (!settingsModal.hidden) closeSettings();
   if (!newModal.hidden) {
@@ -4262,7 +4263,50 @@ async function uploadAndInsert(fileList) {
   else showToast(`Added ${paths.length} file${paths.length > 1 ? "s" : ""}`);
 }
 
+// A phone has no way to paste into the terminal: xterm's input is an off-screen
+// textarea, so the OS paste callout never appears, and long-press is taken by
+// copy-screen. Read the clipboard directly where the browser allows it (secure
+// context, permission granted); otherwise paste into a real textarea first.
+const pasteModal = document.getElementById("paste-modal");
+const pasteText = document.getElementById("paste-text");
+function closePasteModal() {
+  pasteModal.hidden = true;
+}
+function pasteIntoActive(text) {
+  const s = sessions.get(activeId);
+  if (!s?.term || !text) return;
+  s.term.paste(text);
+  s.term.focus();
+}
+async function requestPaste() {
+  if (!activeId) {
+    showToast("Open a session first", true);
+    return;
+  }
+  try {
+    const text = await navigator.clipboard.readText();
+    if (text) return pasteIntoActive(text);
+  } catch {}
+  pasteText.value = "";
+  pasteModal.hidden = false;
+  pasteText.focus();
+}
+document.getElementById("paste-confirm").addEventListener("click", () => {
+  closePasteModal();
+  pasteIntoActive(pasteText.value);
+});
+document
+  .getElementById("paste-cancel")
+  .addEventListener("click", closePasteModal);
+document
+  .getElementById("paste-backdrop")
+  .addEventListener("click", closePasteModal);
+
 if (IS_REMOTE) {
+  const pasteBtn = document.getElementById("paste-btn");
+  pasteBtn.hidden = !matchMedia("(pointer: coarse)").matches;
+  pasteBtn.addEventListener("click", requestPaste);
+
   const uploadBtn = document.getElementById("upload-btn");
   const uploadInput = document.getElementById("upload-input");
   uploadBtn.hidden = false;

@@ -276,7 +276,8 @@ body.popout .titlebar-side > * {
 }
 
 .attention-btn[hidden],
-#upload-btn[hidden] {
+#upload-btn[hidden],
+#paste-btn[hidden] {
   display: none;
 }
 
@@ -1558,6 +1559,13 @@ body.engine-ghostty .xterm-only {
 /* display:flex above would otherwise override [hidden] (forms always open) */
 .set-theme-form[hidden] {
   display: none;
+}
+
+.paste-text {
+  min-height: 120px;
+  resize: vertical;
+  font-family: "JetBrains Mono", "Fira Code", ui-monospace, monospace;
+  font-size: 12px;
 }
 
 .set-theme-paste {
