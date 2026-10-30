@@ -2197,6 +2197,17 @@ label.set-row {
   white-space: nowrap;
 }
 
+.set-group-worktree {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--fg-dim);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
 .set-group-model .ns-menu {
   left: auto;
   right: 0;

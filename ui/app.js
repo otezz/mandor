@@ -953,6 +953,7 @@ function createGroup(name = "New group", dir = null) {
     dir,
     model: null, // "" = claude's own default; null = fall back to settings.defaultModel
     namePrefix: "", // pinned in front of new session names created in this group
+    worktree: false, // pre-check "Create a git worktree" for new sessions here
   };
   groups.push(g);
   persist();
@@ -3794,6 +3795,7 @@ function buildNsGroupMenu() {
     b.textContent = label;
     b.addEventListener("click", () => {
       newSessionGroup = id || "";
+      nsWorktree.checked = !!(id && groups.find((x) => x.id === id)?.worktree);
       setGroupLabel();
       closeNsMenus();
     });
@@ -3826,7 +3828,7 @@ function openNewSession(presetGroupId = null) {
   // truthiness (|| would treat the group's own explicit "" as unconfigured).
   newSessionModel = (g ? g.model : null) ?? settings.defaultModel ?? "";
   nsNameEdited = false;
-  nsWorktree.checked = false;
+  nsWorktree.checked = !!(g && g.worktree);
   nsRemote.checked = !!settings.remoteByDefault;
   nsIncognito.checked = false;
   nsYolo.checked = false; // never sticky: opting out of permissions is deliberate
@@ -4859,11 +4861,24 @@ function renderSettingsGroups() {
       if (!modelMenu.hidden) openGroupModelMenu = modelMenu;
     });
     modelWrap.append(modelBtn, modelMenu);
+    const worktree = document.createElement("label");
+    worktree.className = "set-group-worktree";
+    worktree.title =
+      'Check "Create a git worktree" by default for new sessions in this group';
+    const worktreeBox = document.createElement("input");
+    worktreeBox.type = "checkbox";
+    worktreeBox.checked = !!g.worktree;
+    worktreeBox.addEventListener("change", () => {
+      g.worktree = worktreeBox.checked;
+      persist();
+    });
+    worktree.append(worktreeBox, "Worktree");
     row.append(
       name,
       prefix,
       dir,
       modelWrap,
+      worktree,
       ghostBtn(g.dir ? "Change" : "Set folder", async () => {
         await setGroupDir(g);
         renderSettingsGroups();
