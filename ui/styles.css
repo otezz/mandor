@@ -231,6 +231,20 @@ body.popout .titlebar-side > * {
   color: var(--fg);
 }
 
+.editor-split {
+  align-items: center;
+}
+
+body:not(.remote) #open-editor-btn {
+  border-radius: 6px 0 0 6px;
+}
+
+.editor-pick-btn {
+  margin-left: -1px;
+  padding: 0 6px;
+  border-radius: 0 6px 6px 0;
+}
+
 .titlebar-util-btn:disabled {
   opacity: 0.45;
   cursor: default;
@@ -2257,6 +2271,7 @@ body.remote #set-run-on-startup-row,
 body.remote #set-editor-row,
 body.remote [data-section="profiles"],
 body.remote #sidebar-quit,
+body.remote #editor-pick-btn,
 body.remote #sidebar-profiles,
 body.remote #set-bell-file-btn,
 body.remote [data-section="remote"] {

@@ -63,23 +63,36 @@
               📎
             </button>
             <input id="upload-input" type="file" multiple hidden />
-            <button
-              id="open-editor-btn"
-              class="titlebar-util-btn"
-              type="button"
-              title="Open this session's folder in your editor"
-              disabled
-            >
-              <svg
-                viewBox="0 0 16 16"
-                width="13"
-                height="13"
-                aria-hidden="true"
+            <div class="dropdown editor-split">
+              <button
+                id="open-editor-btn"
+                class="titlebar-util-btn"
+                type="button"
+                title="Open this session's folder in your editor"
+                disabled
               >
-                <path d="M9.5 2.5h4v4M13.5 2.5 7 9M11.5 9v4.5h-9v-9H7" />
-              </svg>
-              Open in editor
-            </button>
+                <svg
+                  viewBox="0 0 16 16"
+                  width="13"
+                  height="13"
+                  aria-hidden="true"
+                >
+                  <path d="M9.5 2.5h4v4M13.5 2.5 7 9M11.5 9v4.5h-9v-9H7" />
+                </svg>
+                Open in editor
+              </button>
+              <button
+                id="editor-pick-btn"
+                class="titlebar-util-btn editor-pick-btn"
+                type="button"
+                title="Choose editor"
+                aria-label="Choose editor"
+                disabled
+              >
+                ▾
+              </button>
+              <div id="editor-menu" class="dropdown-menu" hidden></div>
+            </div>
           </div>
           <div class="titlebar-controls">
             <div id="titlebar-update" class="titlebar-update" hidden>
