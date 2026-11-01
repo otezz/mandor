@@ -107,7 +107,8 @@ fn incognito_base() -> Option<PathBuf> {
 
 /// Where persistent per-profile config dirs live. Unlike incognito this is DURABLE
 /// (the data dir, not the cache dir) and is NEVER swept — a profile keeps its own
-/// login, settings, MCP servers, and session history across restarts.
+/// login, settings, MCP servers, and session history across restarts. Dev builds
+/// keep their own, since their profile list lives in a separate webview store.
 fn profiles_base() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     let data = std::env::var_os("HOME")
@@ -118,7 +119,12 @@ fn profiles_base() -> Option<PathBuf> {
         .or_else(|| {
             std::env::var_os("HOME").map(|h| PathBuf::from(h).join(".local").join("share"))
         });
-    data.map(|d| d.join("mandor").join("profiles"))
+    let name = if cfg!(debug_assertions) {
+        "profiles-dev"
+    } else {
+        "profiles"
+    };
+    data.map(|d| d.join("mandor").join(name))
 }
 
 /// A single profile's config dir, `profiles_base/<id>`. `id` is a UUID from the
@@ -726,7 +732,21 @@ pub fn running_ptys(state: State<PtyState>) -> Vec<RunningPty> {
 
 #[cfg(test)]
 mod tests {
-    use super::slugify;
+    use super::{profiles_base, slugify};
+
+    #[test]
+    fn debug_builds_keep_profiles_apart_from_release() {
+        let base = profiles_base().expect("a data dir");
+        let expected = if cfg!(debug_assertions) {
+            "profiles-dev"
+        } else {
+            "profiles"
+        };
+        assert!(
+            base.ends_with(std::path::Path::new("mandor").join(expected)),
+            "{base:?}"
+        );
+    }
 
     #[test]
     fn slugify_kebab_cases() {
