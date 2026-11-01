@@ -2,7 +2,10 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, interactive-widget=resizes-content"
+    />
     <title>Mandor</title>
     <link rel="icon" type="image/png" href="favicon.png" />
     <link rel="stylesheet" href="vendor/xterm.css" />
@@ -63,16 +66,6 @@
               📎
             </button>
             <input id="upload-input" type="file" multiple hidden />
-            <button
-              id="paste-btn"
-              class="titlebar-menu-btn"
-              type="button"
-              title="Paste into this session"
-              aria-label="Paste"
-              hidden
-            >
-              📋
-            </button>
             <div class="dropdown editor-split">
               <button
                 id="open-editor-btn"
@@ -89,7 +82,7 @@
                 >
                   <path d="M9.5 2.5h4v4M13.5 2.5 7 9M11.5 9v4.5h-9v-9H7" />
                 </svg>
-                Open in editor
+                <span class="btn-label">Open in editor</span>
               </button>
               <button
                 id="editor-pick-btn"
@@ -343,6 +336,19 @@
             </p>
           </div>
         </main>
+        <div id="drawer-backdrop" class="drawer-backdrop"></div>
+      </div>
+      <div id="keybar" class="keybar" hidden>
+        <button type="button" data-key="esc">Esc</button>
+        <button type="button" data-key="tab">Tab</button>
+        <button type="button" data-key="btab">⇧Tab</button>
+        <button type="button" data-key="ctrlc">^C</button>
+        <button type="button" data-key="left" aria-label="Left">←</button>
+        <button type="button" data-key="up" aria-label="Up">↑</button>
+        <button type="button" data-key="down" aria-label="Down">↓</button>
+        <button type="button" data-key="right" aria-label="Right">→</button>
+        <button type="button" data-key="newline" title="New line">⇧⏎</button>
+        <button type="button" data-key="paste" aria-label="Paste">📋</button>
       </div>
     </div>
 

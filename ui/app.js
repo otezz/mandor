@@ -2976,6 +2976,7 @@ function setFocusedPane(id) {
 
 function setActive(id) {
   const s = sessions.get(id);
+  setDrawerOpen(false);
   // In split view: focusing a tiled session just moves the highlight; selecting a
   // session that isn't tiled leaves split view for the normal single view.
   if (viewMode === "split" && splitIds.includes(id)) {
@@ -4351,10 +4352,53 @@ document
   .getElementById("paste-backdrop")
   .addEventListener("click", closePasteModal);
 
+// Phone keyboards have no Esc, Tab, arrows or Ctrl, which claude's prompts and
+// menus depend on, so a touch browser gets a row of those keys.
+const KEYBAR_BYTES = {
+  esc: "\x1b",
+  tab: "\t",
+  btab: "\x1b[Z",
+  ctrlc: "\x03",
+  newline: "\n", // what Shift+Enter injects, see attachTerminal's keyHandler
+};
+const KEYBAR_ARROWS = { up: "A", down: "B", right: "C", left: "D" };
+function keybarSend(key) {
+  if (key === "paste") return requestPaste();
+  const s = sessions.get(activeId);
+  if (!s?.live || !s.term) return;
+  const data =
+    key in KEYBAR_ARROWS
+      ? (s.term.modes?.applicationCursorKeysMode ? "\x1bO" : "\x1b[") +
+        KEYBAR_ARROWS[key]
+      : KEYBAR_BYTES[key];
+  s.lastActivityMs = Date.now();
+  invoke("write_pty", { id: s.id, data }).catch(() => {});
+}
+
 if (IS_REMOTE) {
-  const pasteBtn = document.getElementById("paste-btn");
-  pasteBtn.hidden = !matchMedia("(pointer: coarse)").matches;
-  pasteBtn.addEventListener("click", requestPaste);
+  const keybar = document.getElementById("keybar");
+  keybar.hidden = !matchMedia("(pointer: coarse)").matches;
+  // Keep focus where it is, so a tap neither opens nor dismisses the keyboard.
+  keybar.addEventListener("mousedown", (e) => e.preventDefault());
+  keybar.addEventListener("click", (e) => {
+    const key = e.target.closest("button")?.dataset.key;
+    if (key) keybarSend(key);
+  });
+
+  // iOS keeps the layout viewport (and dvh) full height under the on-screen
+  // keyboard; size the window to the visible part so the key bar and input line
+  // sit above it. Skipped while pinch-zoomed, where the visible part is smaller
+  // on purpose.
+  const vv = window.visualViewport;
+  if (vv) {
+    const syncHeight = () => {
+      if (vv.scale > 1.01) return;
+      document.documentElement.style.setProperty("--vvh", `${vv.height}px`);
+      window.scrollTo(0, 0);
+    };
+    vv.addEventListener("resize", syncHeight);
+    syncHeight();
+  }
 
   const uploadBtn = document.getElementById("upload-btn");
   const uploadInput = document.getElementById("upload-input");
@@ -4513,19 +4557,42 @@ document.getElementById("close-confirm").addEventListener("click", () => {
 });
 
 // --- sidebar collapse ---
+// On a narrow screen the sidebar is an overlay drawer instead, so the terminal
+// keeps the full width; the saved desktop collapse state is left alone.
+const narrowQuery = matchMedia("(max-width: 700px)");
+function setDrawerOpen(open) {
+  document.body.classList.toggle("drawer-open", open);
+}
+
 function applySidebarCollapsed() {
   document.body.classList.toggle("sidebar-collapsed", sidebarCollapsed);
   const btn = document.getElementById("sidebar-toggle");
-  btn.textContent = sidebarCollapsed ? "»" : "«";
-  btn.title = sidebarCollapsed ? "Show sidebar" : "Hide sidebar";
+  if (narrowQuery.matches) {
+    btn.textContent = "☰";
+    btn.title = "Sessions";
+  } else {
+    btn.textContent = sidebarCollapsed ? "»" : "«";
+    btn.title = sidebarCollapsed ? "Show sidebar" : "Hide sidebar";
+  }
   const s = sessions.get(activeId);
   if (s && s.fit) s.fit.fit();
 }
 
 document.getElementById("sidebar-toggle").addEventListener("click", () => {
+  if (narrowQuery.matches) {
+    setDrawerOpen(!document.body.classList.contains("drawer-open"));
+    return;
+  }
   sidebarCollapsed = !sidebarCollapsed;
   applySidebarCollapsed();
   persist();
+});
+document
+  .getElementById("drawer-backdrop")
+  .addEventListener("click", () => setDrawerOpen(false));
+narrowQuery.addEventListener("change", () => {
+  setDrawerOpen(false);
+  applySidebarCollapsed();
 });
 
 // --- window resize grips (native decorations are off) ---

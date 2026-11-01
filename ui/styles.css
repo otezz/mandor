@@ -290,8 +290,7 @@ body:not(.remote) #open-editor-btn {
 }
 
 .attention-btn[hidden],
-#upload-btn[hidden],
-#paste-btn[hidden] {
+#upload-btn[hidden] {
   display: none;
 }
 
@@ -2410,4 +2409,107 @@ body.popout #sidebar {
   height: 8px;
   cursor: nwse-resize;
   z-index: 1001;
+}
+
+/* Remote: follow the visible viewport (see the visualViewport sync in app.js) */
+body.remote .window {
+  height: var(--vvh, 100dvh);
+}
+
+/* Touch key bar: the keys a phone keyboard lacks */
+.keybar {
+  display: flex;
+  gap: 4px;
+  padding: 4px 6px;
+  flex-shrink: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+  background: var(--bg-alt);
+  border-top: 1px solid var(--border);
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.keybar[hidden] {
+  display: none;
+}
+
+.keybar button {
+  flex: 1 1 auto;
+  min-width: 30px;
+  height: 36px;
+  padding: 0 4px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--fg);
+  font: inherit;
+  font-size: 14px;
+  touch-action: manipulation;
+}
+
+.keybar button:active {
+  background: var(--accent-bg);
+}
+
+.drawer-backdrop {
+  display: none;
+}
+
+/* Narrow screens: the sidebar becomes an overlay drawer */
+@media (max-width: 700px) {
+  #app {
+    position: relative;
+  }
+
+  #sidebar,
+  body.sidebar-collapsed #sidebar {
+    display: none;
+  }
+
+  body.drawer-open #sidebar {
+    display: flex;
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    z-index: 50;
+    width: min(300px, 85vw);
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.4);
+  }
+
+  body.drawer-open .drawer-backdrop {
+    display: block;
+    position: absolute;
+    inset: 0;
+    z-index: 49;
+    background: rgba(0, 0, 0, 0.4);
+  }
+
+  .titlebar-side {
+    width: auto;
+    background: var(--titlebar);
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .titlebar-app,
+  .editor-split .btn-label {
+    display: none;
+  }
+
+  .titlebar-main {
+    padding-left: 4px;
+  }
+
+  .session-row {
+    padding-top: 11px;
+    padding-bottom: 11px;
+  }
+
+  .modal-box {
+    width: calc(100vw - 16px);
+    margin: 8px 0;
+    max-height: calc(100% - 16px);
+  }
 }
