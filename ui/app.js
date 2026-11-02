@@ -2740,13 +2740,17 @@ function notifyAttention(s) {
   // browser would trigger a second native notification popup on the machine
   // Mandor runs on. The desktop client's own dot/badge/sound are unaffected;
   // this only gates the `notify` side effect.
-  if (IS_REMOTE) return;
-  if (notificationsEnabled && !appInForeground()) {
-    invoke("notify", {
-      title: s.name,
-      body: "Claude finished / needs input",
-    }).catch(() => {});
-  }
+  if (IS_REMOTE || appInForeground()) return;
+  const body = "Claude finished / needs input";
+  if (notificationsEnabled)
+    invoke("notify", { title: s.name, body }).catch(() => {});
+  // Devices that turned on push (see push.rs) get it too. The desktop is the
+  // only sender, so one episode never pushes twice; a pop-out defers to the
+  // main window for the same reason.
+  if (!POPOUT)
+    invoke("push_notify", { title: s.name, body, sessionId: s.id }).catch(
+      () => {},
+    );
 }
 
 // Spawn the PTY for a materialized session. `new` forces a fresh session id
@@ -4375,7 +4379,102 @@ function keybarSend(key) {
   invoke("write_pty", { id: s.id, data }).catch(() => {});
 }
 
+// Push notifications for a remote browser (see push.rs and sw.js). iOS only
+// offers push to a page added to the Home Screen, and every browser needs
+// HTTPS, so the row explains whichever of those is missing.
+const pushRow = document.getElementById("set-push-row");
+const pushHint = document.getElementById("set-push-hint");
+const pushBtn = document.getElementById("set-push-btn");
+// Registered with the page's own query string, so a notification tap can
+// reopen the same URL (token included) when no Mandor window is open.
+const swReady =
+  IS_REMOTE && "serviceWorker" in navigator
+    ? navigator.serviceWorker
+        .register("sw.js" + location.search)
+        .catch(() => null)
+    : Promise.resolve(null);
+let pushSub = null;
+
+function base64UrlToBytes(s) {
+  const b64 = s.replace(/-/g, "+").replace(/_/g, "/");
+  const bin = atob(b64 + "=".repeat((4 - (b64.length % 4)) % 4));
+  return Uint8Array.from(bin, (c) => c.charCodeAt(0));
+}
+
+async function refreshPushRow() {
+  pushRow.hidden = false;
+  const reg = await swReady;
+  const standalone =
+    matchMedia("(display-mode: standalone)").matches || navigator.standalone;
+  const isIos =
+    /iPhone|iPad|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === "MacIntel" && navigator.maxTouchPoints > 1);
+  let canEnable = !!reg && "PushManager" in window;
+  let hint =
+    "Notify this device when a session finishes or needs you and the desktop app isn't in front.";
+  if (!window.isSecureContext) {
+    canEnable = false;
+    hint = "Needs HTTPS: open Mandor through its https:// address.";
+  } else if (isIos && !standalone) {
+    canEnable = false;
+    hint =
+      "On iPhone and iPad, first use Share → Add to Home Screen, then turn this on in the home-screen app.";
+  } else if (!canEnable) {
+    hint = "This browser doesn't support push notifications.";
+  } else if (Notification.permission === "denied") {
+    canEnable = false;
+    hint = "Notifications are blocked for this site in the browser's settings.";
+  }
+  pushSub = canEnable ? await reg.pushManager.getSubscription() : null;
+  if (pushSub) {
+    hint = "On for this device.";
+    // Idempotent; re-registers a device the server has forgotten.
+    invoke("push_subscribe", { subscription: pushSub.toJSON() }).catch(
+      () => {},
+    );
+  }
+  pushHint.textContent = hint;
+  pushBtn.hidden = !canEnable;
+  pushBtn.textContent = pushSub ? "Turn off" : "Turn on";
+}
+
+async function togglePush() {
+  pushBtn.disabled = true;
+  try {
+    if (pushSub) {
+      await invoke("push_unsubscribe", { endpoint: pushSub.endpoint });
+      await pushSub.unsubscribe();
+    } else {
+      // First await in the tap handler: Safari only prompts from a user gesture.
+      if ((await Notification.requestPermission()) !== "granted")
+        throw new Error("notification permission wasn't granted");
+      const reg = await swReady;
+      const key = await invoke("push_public_key");
+      const sub = await reg.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: base64UrlToBytes(key),
+      });
+      await invoke("push_subscribe", { subscription: sub.toJSON() });
+      showToast("Push notifications on");
+    }
+  } catch (e) {
+    showToast(`Push notifications: ${e?.message || e}`, true, 6000);
+  }
+  pushBtn.disabled = false;
+  refreshPushRow();
+}
+
+function openSessionFromPush(id) {
+  if (id && sessions.has(id)) setActive(id);
+}
+
 if (IS_REMOTE) {
+  refreshPushRow();
+  pushBtn.addEventListener("click", togglePush);
+  navigator.serviceWorker?.addEventListener("message", (e) => {
+    if (e.data?.type === "open-session") openSessionFromPush(e.data.id);
+  });
+
   const keybar = document.getElementById("keybar");
   keybar.hidden = !matchMedia("(pointer: coarse)").matches;
   // Keep focus where it is, so a tap neither opens nor dismisses the keyboard.
@@ -5565,4 +5664,12 @@ async function prepareTerminalEngine() {
   );
 }
 
-prepareTerminalEngine().then(() => (POPOUT ? runPopout() : restore()));
+prepareTerminalEngine()
+  .then(() => (POPOUT ? runPopout() : restore()))
+  .then(() => {
+    // Opened by tapping a push notification with no Mandor window open (sw.js).
+    const m = location.hash.match(/^#session=(.+)$/);
+    if (!m) return;
+    history.replaceState(null, "", location.pathname + location.search);
+    openSessionFromPush(decodeURIComponent(m[1]));
+  });

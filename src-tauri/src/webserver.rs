@@ -111,7 +111,7 @@ async fn check_token(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    if token.is_empty() {
+    if token.is_empty() || is_install_asset(req.uri().path()) {
         return next.run(req).await;
     }
     let query = req.uri().query().unwrap_or("");
@@ -121,6 +121,14 @@ async fn check_token(
     } else {
         (StatusCode::UNAUTHORIZED, "missing or wrong ?token=").into_response()
     }
+}
+
+/// Home-screen install files: iOS fetches the manifest and icons without the
+/// page's query string, so they can't carry the token. They're static and hold
+/// nothing private.
+fn is_install_asset(path: &str) -> bool {
+    !path.contains("..")
+        && (path == "/manifest.webmanifest" || path == "/sw.js" || path.starts_with("/icons/"))
 }
 
 fn query_param<'q>(query: &'q str, key: &str) -> Option<&'q str> {
@@ -428,6 +436,17 @@ async fn dispatch(app: &AppHandle, command: &str, args: Value) -> Result<Value, 
             super::notify(req_str(&args, "title")?, req_str(&args, "body")?)?;
             Ok(Value::Null)
         }
+        "push_public_key" => Ok(json!(crate::push::push_public_key()?)),
+        "push_subscribe" => {
+            let sub = serde_json::from_value(args.get("subscription").cloned().unwrap_or_default())
+                .map_err(|e| e.to_string())?;
+            crate::push::push_subscribe(sub)?;
+            Ok(Value::Null)
+        }
+        "push_unsubscribe" => {
+            crate::push::push_unsubscribe(req_str(&args, "endpoint")?)?;
+            Ok(Value::Null)
+        }
         "open_url" => {
             super::open_url(req_str(&args, "url")?)?;
             Ok(Value::Null)
@@ -573,6 +592,18 @@ mod tests {
             std::env::temp_dir().join(format!("mandor-upload-test-{tag}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         dir
+    }
+
+    #[test]
+    fn only_install_assets_skip_the_token() {
+        assert!(is_install_asset("/manifest.webmanifest"));
+        assert!(is_install_asset("/sw.js"));
+        assert!(is_install_asset("/icons/icon-192.png"));
+        assert!(!is_install_asset("/"));
+        assert!(!is_install_asset("/index.html"));
+        assert!(!is_install_asset("/api/invoke/write_pty"));
+        assert!(!is_install_asset("/ws"));
+        assert!(!is_install_asset("/icons/../api/invoke/write_pty"));
     }
 
     #[test]

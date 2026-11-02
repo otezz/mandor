@@ -290,7 +290,8 @@ body:not(.remote) #open-editor-btn {
 }
 
 .attention-btn[hidden],
-#upload-btn[hidden] {
+#upload-btn[hidden],
+#set-push-row[hidden] {
   display: none;
 }
 

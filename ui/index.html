@@ -8,6 +8,14 @@
     />
     <title>Mandor</title>
     <link rel="icon" type="image/png" href="favicon.png" />
+    <!-- No start_url in the manifest on purpose: an installed app then opens
+         the URL it was added from, keeping any ?token= the server needs. -->
+    <link rel="manifest" href="manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="Mandor" />
+    <meta name="theme-color" content="#303446" />
     <link rel="stylesheet" href="vendor/xterm.css" />
     <link rel="stylesheet" href="styles.css" />
     <script src="vendor/xterm.js" defer></script>
@@ -895,6 +903,15 @@
                   type="checkbox"
                 />
               </label>
+              <div id="set-push-row" class="set-row" hidden>
+                <span class="set-row-text">
+                  <span class="set-label">Push notifications</span>
+                  <span id="set-push-hint" class="set-hint"></span>
+                </span>
+                <button id="set-push-btn" class="set-ghost" type="button">
+                  Enable
+                </button>
+              </div>
               <label class="set-row">
                 <span class="set-row-text">
                   <span class="set-label">Bell sound</span>

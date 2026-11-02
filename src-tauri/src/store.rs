@@ -44,7 +44,7 @@ struct StoreUpdate {
     value: Value,
 }
 
-fn store_dir() -> Option<PathBuf> {
+pub(crate) fn store_dir() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     let data = std::env::var_os("HOME")
         .map(|h| PathBuf::from(h).join("Library").join("Application Support"));

@@ -2,6 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod pty;
+mod push;
 mod sessions;
 mod store;
 mod webeditor;
@@ -896,6 +897,10 @@ fn main() {
             store::save_store,
             store::get_remote_config,
             store::save_remote_config,
+            push::push_public_key,
+            push::push_subscribe,
+            push::push_unsubscribe,
+            push::push_notify,
             webserver::browse_dir
         ])
         .build(tauri::generate_context!())
