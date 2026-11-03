@@ -222,6 +222,7 @@ let settings = {
   defaultCwd: "",
   claudePath: "",
   editorCommand: "", // "Open in editor" command; "" = code
+  terminalCommand: "", // "Open in terminal" command; "" = first detected
   notifications: true,
   defaultModel: "",
   terminalFontSize: 11, // points (converted to px for xterm), like other terminals
@@ -276,6 +277,8 @@ function updateTitle() {
   titleEl.textContent = s ? s.name : "";
   document.getElementById("open-editor-btn").disabled = !s;
   document.getElementById("editor-pick-btn").disabled = !s;
+  document.getElementById("open-terminal-btn").disabled = !s;
+  document.getElementById("terminal-pick-btn").disabled = !s;
 }
 
 // --- theming: data-driven registry (chrome vars + full 16-color terminal
@@ -1729,40 +1732,77 @@ async function openInEditor(s) {
   }).catch((e) => showToast(String(e), true));
 }
 
+async function openInTerminal(s) {
+  const cwd = await invoke("session_cwd", {
+    id: s.id,
+    profileId: PROFILE_ID,
+  }).catch(() => null);
+  invoke("open_in_terminal", {
+    path: cwd || s.cwd,
+    terminal: settings.terminalCommand || null,
+  }).catch((e) => showToast(String(e), true));
+}
+
+// The editor and terminal dropdowns: apps detected on this machine (fetched
+// once, on the first open), the current choice ticked, then a way to type a
+// custom command in Settings.
 const editorMenu = document.getElementById("editor-menu");
-let detectedEditors = null; // fetched once, on the first open of the menu
-async function buildEditorMenu() {
-  detectedEditors ??= (await invoke("detect_editors").catch(() => null)) || [];
-  const current = settings.editorCommand || "code";
-  const items = [...detectedEditors];
-  if (!items.some((e) => e.command === current))
+const terminalMenu = document.getElementById("terminal-menu");
+const launchMenus = {
+  editor: {
+    menu: editorMenu,
+    detect: "detect_editors",
+    setting: "editorCommand",
+    fallback: () => "code",
+    input: "set-editor",
+    open: openInEditor,
+  },
+  terminal: {
+    menu: terminalMenu,
+    detect: "detect_terminals",
+    setting: "terminalCommand",
+    // Blank runs the first detected terminal (see open_in_terminal).
+    fallback: (found) => found[0]?.command || "",
+    input: "set-terminal",
+    open: openInTerminal,
+  },
+};
+async function buildLaunchMenu(kind) {
+  const m = launchMenus[kind];
+  m.detected ??= (await invoke(m.detect).catch(() => null)) || [];
+  const current = settings[m.setting] || m.fallback(m.detected);
+  const items = [...m.detected];
+  if (current && !items.some((x) => x.command === current))
     items.unshift({ name: current, command: current });
-  editorMenu.replaceChildren();
-  for (const ed of items) {
+  m.menu.replaceChildren();
+  for (const app of items) {
     const b = document.createElement("button");
     b.type = "button";
-    b.textContent = ed.name + (ed.command === current ? "  ✓" : "");
-    b.title = ed.command;
+    b.textContent = app.name + (app.command === current ? "  ✓" : "");
+    b.title = app.command;
     b.addEventListener("click", () => {
-      settings.editorCommand = ed.command;
+      settings[m.setting] = app.command;
       persist();
       const s = sessions.get(activeId);
-      if (s) openInEditor(s);
+      if (s) m.open(s);
     });
-    editorMenu.appendChild(b);
+    m.menu.appendChild(b);
   }
-  editorMenu.appendChild(
-    Object.assign(document.createElement("div"), { className: "dropdown-sep" }),
-  );
+  if (items.length)
+    m.menu.appendChild(
+      Object.assign(document.createElement("div"), {
+        className: "dropdown-sep",
+      }),
+    );
   const custom = document.createElement("button");
   custom.type = "button";
   custom.textContent = "Custom command…";
   custom.addEventListener("click", () => {
     openSettings();
     showSettingsSection("general");
-    document.getElementById("set-editor").focus();
+    document.getElementById(m.input).focus();
   });
-  editorMenu.appendChild(custom);
+  m.menu.appendChild(custom);
 }
 
 function openContextMenu(e, kind, id) {
@@ -1785,6 +1825,8 @@ function openContextMenu(e, kind, id) {
       items.push({ label: "Open in new window", run: () => popOutSession(id) });
     }
     items.push({ label: "Open in editor", run: () => openInEditor(s) });
+    if (!IS_REMOTE)
+      items.push({ label: "Open in terminal", run: () => openInTerminal(s) });
     if (s.live) {
       // Resume can't pass --remote-control (the CLI would fail reconnecting to a
       // dead registration), so enable it in-session — a fresh registration.
@@ -4073,6 +4115,7 @@ document.addEventListener("keydown", (e) => {
   if (!pasteModal.hidden) closePasteModal();
   if (!attentionMenu.hidden) attentionMenu.hidden = true;
   editorMenu.hidden = true;
+  terminalMenu.hidden = true;
   if (!settingsModal.hidden) closeSettings();
   if (!newModal.hidden) {
     if (!nsCwdMenu.hidden || !nsGroupMenu.hidden) closeNsMenus();
@@ -4090,6 +4133,7 @@ document.addEventListener("click", () => {
   setFontMenu.hidden = true;
   if (!POPOUT) attentionMenu.hidden = true;
   editorMenu.hidden = true;
+  terminalMenu.hidden = true;
 });
 document
   .getElementById("sidebar-settings")
@@ -4136,14 +4180,22 @@ document.getElementById("open-editor-btn").addEventListener("click", () => {
   const s = sessions.get(activeId);
   if (s) openInEditor(s);
 });
-document
-  .getElementById("editor-pick-btn")
-  .addEventListener("click", async (e) => {
-    e.stopPropagation();
-    if (!editorMenu.hidden) return (editorMenu.hidden = true);
-    await buildEditorMenu();
-    editorMenu.hidden = false;
-  });
+document.getElementById("open-terminal-btn").addEventListener("click", () => {
+  const s = sessions.get(activeId);
+  if (s) openInTerminal(s);
+});
+for (const [kind, { menu }] of Object.entries(launchMenus)) {
+  document
+    .getElementById(`${kind}-pick-btn`)
+    .addEventListener("click", async (e) => {
+      e.stopPropagation();
+      const wasOpen = !menu.hidden;
+      editorMenu.hidden = terminalMenu.hidden = true;
+      if (wasOpen) return;
+      await buildLaunchMenu(kind);
+      menu.hidden = false;
+    });
+}
 
 const MAX_ICON =
   '<svg viewBox="0 0 10 10" width="10" height="10" aria-hidden="true"><rect x="1" y="1" width="8" height="8" rx="1" fill="none"/></svg>';
@@ -5111,6 +5163,8 @@ function openSettings() {
     terminalEngine === "ghostty";
   document.getElementById("set-claude-path").value = settings.claudePath;
   document.getElementById("set-editor").value = settings.editorCommand || "";
+  document.getElementById("set-terminal").value =
+    settings.terminalCommand || "";
   document.getElementById("set-fontsize").value =
     settings.terminalFontSize || 11;
   document.getElementById("set-copy-on-select").checked = copyOnSelect;
@@ -5280,6 +5334,10 @@ document
   .addEventListener("click", saveCustomTheme);
 document.getElementById("set-editor").addEventListener("change", (e) => {
   settings.editorCommand = e.target.value.trim();
+  persist();
+});
+document.getElementById("set-terminal").addEventListener("change", (e) => {
+  settings.terminalCommand = e.target.value.trim();
   persist();
 });
 document.getElementById("set-claude-path").addEventListener("change", (e) => {

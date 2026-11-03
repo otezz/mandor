@@ -464,12 +464,9 @@ struct Editor {
 /// The known editors installed here, for the "Open in editor" dropdown.
 #[tauri::command]
 async fn detect_editors() -> Vec<Editor> {
-    tauri::async_runtime::spawn_blocking(|| {
-        let path = std::env::var_os("PATH").unwrap_or_default();
-        installed_editors(&std::env::split_paths(&path).collect::<Vec<_>>())
-    })
-    .await
-    .unwrap_or_default()
+    tauri::async_runtime::spawn_blocking(|| installed_editors(&path_dirs()))
+        .await
+        .unwrap_or_default()
 }
 
 fn installed_editors(dirs: &[PathBuf]) -> Vec<Editor> {
@@ -558,12 +555,175 @@ fn launch_editor(path: &str, editor: Option<String>) -> Result<(), String> {
         }
         Err(e) => return Err(format!("couldn't run `{program}`: {e}")),
     };
-    // Reap it once it exits (editor CLIs return quickly) so it doesn't linger
-    // as a zombie for the life of the app.
+    reap_in_background(child);
+    Ok(())
+}
+
+// Reap a launched app once it exits (editor CLIs return quickly) so it doesn't
+// linger as a zombie for the life of Mandor.
+fn reap_in_background(mut child: std::process::Child) {
     std::thread::spawn(move || {
-        let mut child = child;
         let _ = child.wait();
     });
+}
+
+/// Open a terminal in a folder (titlebar → "Open in terminal"). `terminal` is a
+/// command line in which `{path}` stands for the folder, which is also the
+/// working directory, so a terminal without a directory flag still lands
+/// there. Blank means the first detected terminal.
+#[tauri::command]
+async fn open_in_terminal(path: String, terminal: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let terminal = match terminal.filter(|t| !t.trim().is_empty()) {
+            Some(t) => t,
+            None => installed_terminals(&path_dirs())
+                .first()
+                .map(|t| t.command.to_string())
+                .ok_or("no terminal found; set one in Settings")?,
+        };
+        launch_terminal(&path, &terminal)
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[cfg(target_os = "linux")]
+const KNOWN_TERMINALS: &[KnownTerminal] = &[
+    // Separate process per window: a single-instance Ghostty ignores the flags.
+    KnownTerminal::program(
+        "Ghostty",
+        "ghostty --gtk-single-instance=false --working-directory={path}",
+    ),
+    KnownTerminal::program("Ptyxis", "ptyxis --new-window --working-directory={path}"),
+    KnownTerminal::program("GNOME Console", "kgx --working-directory={path}"),
+    KnownTerminal::program(
+        "GNOME Terminal",
+        "gnome-terminal --working-directory={path}",
+    ),
+    KnownTerminal::program("Konsole", "konsole --workdir {path}"),
+    KnownTerminal::program("kitty", "kitty --directory {path}"),
+    KnownTerminal::program("Alacritty", "alacritty --working-directory {path}"),
+    KnownTerminal::program("WezTerm", "wezterm start --cwd {path}"),
+    KnownTerminal::program("foot", "foot --working-directory={path}"),
+    KnownTerminal::program("Tilix", "tilix --working-directory={path}"),
+    KnownTerminal::program("Terminator", "terminator --working-directory={path}"),
+    KnownTerminal::program("Xfce Terminal", "xfce4-terminal --working-directory={path}"),
+    KnownTerminal::program("XTerm", "xterm"),
+];
+
+#[cfg(target_os = "macos")]
+const KNOWN_TERMINALS: &[KnownTerminal] = &[
+    KnownTerminal::app(
+        "Ghostty",
+        "open -na Ghostty --args --working-directory={path}",
+        "/Applications/Ghostty.app",
+    ),
+    KnownTerminal::app("iTerm", "open -a iTerm {path}", "/Applications/iTerm.app"),
+    KnownTerminal::app(
+        "WezTerm",
+        "open -na WezTerm --args start --cwd {path}",
+        "/Applications/WezTerm.app",
+    ),
+    KnownTerminal::app(
+        "Terminal",
+        "open -a Terminal {path}",
+        "/System/Applications/Utilities/Terminal.app",
+    ),
+];
+
+#[cfg(target_os = "windows")]
+const KNOWN_TERMINALS: &[KnownTerminal] =
+    &[KnownTerminal::program("Windows Terminal", "wt -d {path}")];
+
+struct KnownTerminal {
+    name: &'static str,
+    command: &'static str,
+    // macOS apps are found by bundle; everything else by its program on PATH.
+    app_path: Option<&'static str>,
+}
+
+impl KnownTerminal {
+    #[cfg_attr(target_os = "macos", allow(dead_code))]
+    const fn program(name: &'static str, command: &'static str) -> Self {
+        Self {
+            name,
+            command,
+            app_path: None,
+        }
+    }
+
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    const fn app(name: &'static str, command: &'static str, app_path: &'static str) -> Self {
+        Self {
+            name,
+            command,
+            app_path: Some(app_path),
+        }
+    }
+}
+
+/// The known terminals installed here, for the "Open in terminal" dropdown.
+#[tauri::command]
+async fn detect_terminals() -> Vec<Editor> {
+    tauri::async_runtime::spawn_blocking(|| installed_terminals(&path_dirs()))
+        .await
+        .unwrap_or_default()
+}
+
+fn path_dirs() -> Vec<PathBuf> {
+    let path = std::env::var_os("PATH").unwrap_or_default();
+    std::env::split_paths(&path).collect()
+}
+
+fn installed_terminals(dirs: &[PathBuf]) -> Vec<Editor> {
+    KNOWN_TERMINALS
+        .iter()
+        .filter(|t| match t.app_path {
+            Some(app) => std::path::Path::new(app).exists(),
+            None => t
+                .command
+                .split_whitespace()
+                .next()
+                .is_some_and(|program| dirs.iter().any(|d| is_program(d, program))),
+        })
+        .map(|t| Editor {
+            name: t.name,
+            command: t.command,
+        })
+        .collect()
+}
+
+/// Splits a terminal command line and puts the folder in place of `{path}`.
+/// Substituted per word, after splitting, so a folder with spaces stays one
+/// argument.
+fn terminal_args(command: &str, path: &str) -> Result<Vec<String>, String> {
+    let words = shell_words::split(command).map_err(|e| format!("terminal command: {e}"))?;
+    if words.is_empty() {
+        return Err("terminal command is empty".into());
+    }
+    Ok(words.iter().map(|w| w.replace("{path}", path)).collect())
+}
+
+fn launch_terminal(path: &str, terminal: &str) -> Result<(), String> {
+    if !std::path::Path::new(path).is_dir() {
+        return Err(format!("folder not found: {path}"));
+    }
+    let mut words = terminal_args(terminal, path)?;
+    let program = words.remove(0);
+    let child = std::process::Command::new(&program)
+        .args(&words)
+        .current_dir(path)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| match e.kind() {
+            std::io::ErrorKind::NotFound => {
+                format!("terminal command `{program}` not found on PATH")
+            }
+            _ => format!("couldn't run `{program}`: {e}"),
+        })?;
+    reap_in_background(child);
     Ok(())
 }
 
@@ -876,6 +1036,8 @@ fn main() {
             open_url,
             open_in_editor,
             detect_editors,
+            open_in_terminal,
+            detect_terminals,
             read_audio_data,
             session_pr,
             session_cwd,
@@ -914,7 +1076,7 @@ fn main() {
 
 #[cfg(test)]
 mod tests {
-    use super::{installed_editors, launch_editor};
+    use super::{installed_editors, installed_terminals, launch_editor, terminal_args};
 
     fn tmp() -> String {
         std::env::temp_dir().to_string_lossy().into_owned()
@@ -944,6 +1106,70 @@ mod tests {
         assert_eq!(names, [("Zed", "zed")]);
         #[cfg(target_os = "macos")]
         assert!(names.contains(&("Zed", "zed")) && !names.contains(&("Zed", "zeditor")));
+    }
+
+    #[test]
+    fn terminal_path_stays_one_argument() {
+        let args = terminal_args("ghostty --working-directory={path}", "/tmp/a b").unwrap();
+        assert_eq!(args, ["ghostty", "--working-directory=/tmp/a b"]);
+        let args = terminal_args("konsole --workdir {path}", "/tmp/a b").unwrap();
+        assert_eq!(args, ["konsole", "--workdir", "/tmp/a b"]);
+        assert_eq!(terminal_args("xterm", "/x").unwrap(), ["xterm"]);
+        assert!(terminal_args("  ", "/x").is_err());
+        assert!(terminal_args("\"open", "/x").is_err());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn detects_terminals_by_their_program() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = std::env::temp_dir().join(format!("mandor-terms-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        for name in ["ptyxis", "ghostty"] {
+            let p = dir.join(name);
+            std::fs::write(&p, "").unwrap();
+            std::fs::set_permissions(&p, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
+        let found = installed_terminals(&[dir.clone()]);
+        let _ = std::fs::remove_dir_all(&dir);
+        let names: Vec<_> = found.iter().map(|t| t.name).collect();
+        assert_eq!(names, ["Ghostty", "Ptyxis"]); // table order, not PATH order
+    }
+
+    #[test]
+    #[cfg(unix)]
+    fn terminal_starts_in_the_folder() {
+        let dir = std::env::temp_dir().join(format!("mandor-term cwd-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.to_string_lossy().into_owned();
+        // Records both the working directory and the substituted argument.
+        super::launch_terminal(&path, "sh -c 'pwd > out; echo \"$0\" >> out' {path}").unwrap();
+        let out = dir.join("out");
+        let mut text = String::new();
+        for _ in 0..50 {
+            text = std::fs::read_to_string(&out).unwrap_or_default();
+            if text.lines().count() == 2 {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+        let real = std::fs::canonicalize(std::env::temp_dir()).unwrap();
+        let lines: Vec<_> = text.lines().collect();
+        assert_eq!(lines.len(), 2, "{text:?}");
+        assert!(
+            lines[0].starts_with(real.to_str().unwrap())
+                && lines[0].ends_with(&*dir.file_name().unwrap().to_string_lossy())
+        );
+        assert_eq!(lines[1], path);
+    }
+
+    #[test]
+    fn terminal_reports_unknown_command() {
+        let err = super::launch_terminal(&tmp(), "mandor-no-such-term {path}").unwrap_err();
+        assert!(err.contains("`mandor-no-such-term` not found"), "{err}");
     }
 
     #[test]
