@@ -4123,10 +4123,10 @@ document.addEventListener("keydown", (e) => {
   }
   if (isRenameKey(e)) {
     const t = e.target;
+    // Both engines take keys through editable elements inside the terminal.
     const typing =
-      t.isContentEditable ||
-      (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) &&
-        !t.classList.contains("xterm-helper-textarea"));
+      !t.closest(".terminal-host") &&
+      (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName));
     if (!typing && !document.querySelector(".modal:not([hidden])")) {
       e.preventDefault();
       renameFromKeyboard();
