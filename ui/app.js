@@ -2362,8 +2362,8 @@ function attachTerminal(s) {
       },
       true,
     );
-    // ghostty-web has no copy handler, so Cmd/Ctrl+C copied nothing. Serve the
-    // terminal selection on the copy event as xterm does; cancelling beforecopy
+    // ghostty-web copies only from its own Cmd/Ctrl+C key handler. Serve the
+    // terminal selection on the copy event too, as xterm does; cancelling beforecopy
     // is what makes WebKit enable Copy when there is no DOM selection.
     el.addEventListener("beforecopy", (e) => {
       if (term.hasSelection()) e.preventDefault();
@@ -2373,14 +2373,6 @@ function attachTerminal(s) {
       if (!sel || !e.clipboardData) return;
       e.clipboardData.setData("text/plain", sel);
       e.preventDefault();
-    });
-    // ghostty-web only does double-click (word); add triple-click (row).
-    el.addEventListener("click", (e) => {
-      const canvas = el.querySelector("canvas");
-      if (e.detail !== 3 || !canvas) return;
-      const r = canvas.getBoundingClientRect();
-      const row = Math.floor((e.clientY - r.top) / (r.height / term.rows));
-      term.selectLines(row, row);
     });
   }
   // Pane chrome (only shown in split view via CSS): a name label and a ✕ that
