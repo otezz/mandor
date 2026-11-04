@@ -1104,6 +1104,9 @@ function passesFilter(s) {
 }
 
 function renderSessionList() {
+  // Rebuilding would destroy an inline rename mid-edit; editInline re-renders
+  // when the edit ends.
+  if (listEl.querySelector('[contenteditable="true"]')) return;
   listEl.replaceChildren();
   const filtering = sessionFilter !== "all" || sessionSearch.trim() !== "";
   const grouped = groups.length > 0;
@@ -1554,6 +1557,36 @@ function startRenameGroup(g, el) {
     g.name = v;
     persist();
   });
+}
+
+const isRenameKey = (e) =>
+  e.key === "F2" && !e.ctrlKey && !e.metaKey && !e.altKey && !e.shiftKey;
+
+// F2: rename the sidebar row under the pointer, else the active session.
+function renameFromKeyboard() {
+  const row =
+    listEl.querySelector(
+      ".session-row:hover, .group-header[data-group]:hover",
+    ) ||
+    listEl.querySelector(
+      `.session-row[data-id="${CSS.escape(activeId ?? "")}"]`,
+    );
+  const name = row?.querySelector(".s-name, .group-name");
+  if (!name || !name.offsetParent || name.isContentEditable) return;
+  const g = row.dataset.group && groups.find((x) => x.id === row.dataset.group);
+  const s = !row.dataset.group && sessions.get(row.dataset.id);
+  if (!g && !s) return;
+  const back = document.activeElement;
+  // Enter/Escape blur to nowhere; hand focus back (usually the terminal).
+  name.addEventListener(
+    "focusout",
+    (e) => {
+      if (!e.relatedTarget && back?.isConnected) back.focus();
+    },
+    { once: true },
+  );
+  if (g) startRenameGroup(g, name);
+  else startRenameSession(s, name);
 }
 
 // --- right-click context menu ---
@@ -2396,6 +2429,7 @@ function attachTerminal(s) {
       return true;
     }
     if (ev.type !== "keydown") return true;
+    if (isRenameKey(ev)) return false;
     if (
       (ev.ctrlKey || ev.metaKey) &&
       ev.shiftKey &&
@@ -4085,6 +4119,18 @@ document.addEventListener("keydown", (e) => {
       ((e.ctrlKey || e.metaKey) && (e.key === "r" || e.key === "R")))
   ) {
     e.preventDefault();
+    return;
+  }
+  if (isRenameKey(e)) {
+    const t = e.target;
+    const typing =
+      t.isContentEditable ||
+      (/^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) &&
+        !t.classList.contains("xterm-helper-textarea"));
+    if (!typing && !document.querySelector(".modal:not([hidden])")) {
+      e.preventDefault();
+      renameFromKeyboard();
+    }
     return;
   }
   if (e.ctrlKey || e.metaKey) {
