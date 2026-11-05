@@ -38,6 +38,8 @@ shell-words = "1.1.1"
 web-push-native = "0.5"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
 http = "1"
+# Per-session keys for the session tools (mcp.rs).
+getrandom = "0.3"
 
 [target.'cfg(unix)'.dependencies]
 # Stops the whole `code serve-web` process group (see webeditor.rs).

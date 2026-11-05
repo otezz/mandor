@@ -1,6 +1,7 @@
 // Prevents an additional console window on Windows in release. DO NOT REMOVE.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod mcp;
 mod pty;
 mod push;
 mod sessions;
@@ -899,6 +900,7 @@ fn main() {
                 .build(),
         )
         .manage(PtyState::default())
+        .manage(mcp::McpState::default())
         .manage(webeditor::WebEditor::default())
         .manage(store::StoreState::default())
         .manage(AppStartup {
@@ -915,6 +917,7 @@ fn main() {
             // webserver.rs. Read once at launch; toggling the setting takes
             // effect on the next restart.
             webserver::spawn(app.handle().clone(), store::get_remote_config());
+            mcp::spawn(app.handle().clone());
             // show_notification uses notify_rust directly, so register the sender
             // app as tauri-plugin-notification does; otherwise the first
             // notification looks up an app named "use_default" and macOS asks
@@ -1063,7 +1066,8 @@ fn main() {
             push::push_subscribe,
             push::push_unsubscribe,
             push::push_notify,
-            webserver::browse_dir
+            webserver::browse_dir,
+            mcp::mcp_reply
         ])
         .build(tauri::generate_context!())
         .expect("error while building Mandor")

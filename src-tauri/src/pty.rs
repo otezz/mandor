@@ -48,6 +48,8 @@ struct PtySession {
     // computation above. Cleared automatically when this client disconnects,
     // reverting to auto min-of-all sizing among whoever's left.
     pinned: Option<String>,
+    // Bearer key this session's claude uses for Mandor's session tools (mcp.rs).
+    mcp_key: String,
     // Epoch ms this PTY was spawned — identifies *this* process. A session id
     // outlives its PTY (restart, resume, suspend then wake all respawn under the
     // same id), so a remote client comparing ids alone can't tell a respawned
@@ -329,6 +331,17 @@ pub struct PtyState {
 }
 
 impl PtyState {
+    /// The session (id, profile) whose session-tools key this is.
+    pub fn session_for_key(&self, key: &str) -> Option<(String, Option<String>)> {
+        if key.is_empty() {
+            return None;
+        }
+        let map = self.sessions.lock().ok()?;
+        map.iter()
+            .find(|(_, s)| s.mcp_key == key)
+            .map(|(id, s)| (id.clone(), s.profile_id.clone()))
+    }
+
     /// Kill every child on app exit (wired from `RunEvent::ExitRequested`).
     pub fn kill_all(&self) {
         if let Ok(mut map) = self.sessions.lock() {
@@ -405,6 +418,8 @@ fn slugify(name: &str) -> String {
 ///   (`--remote-control`). Only pass this for FRESH sessions — combined with
 ///   `--resume` the CLI tries to reattach to the prior (dead) registration and
 ///   fails; a resumed session re-enables it in-session via `/remote-control`.
+/// - `prompt`: first message for a fresh session (claude's positional prompt),
+///   used when another session creates this one through the session tools.
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub fn open_pty(
@@ -423,6 +438,7 @@ pub fn open_pty(
     incognito: bool,
     profile_id: Option<String>,
     yolo: bool,
+    prompt: Option<String>,
 ) -> Result<(), String> {
     let pair = native_pty_system()
         .openpty(PtySize {
@@ -467,6 +483,12 @@ pub fn open_pty(
     // works on resume too (unlike --remote-control).
     cmd.arg("--settings");
     cmd.arg(r#"{"preferredNotifChannel":"terminal_bell"}"#);
+    let mcp_key = crate::mcp::new_key();
+    if let Some(config) = crate::mcp::mcp_config() {
+        cmd.env(crate::mcp::KEY_ENV, &mcp_key);
+        cmd.arg("--mcp-config");
+        cmd.arg(config);
+    }
     // Config dir precedence: incognito (throwaway, deleted on close) wins; else a
     // persistent profile dir if this window is bound to one; else the default
     // (~/.claude, no override). Only the incognito dir is tracked for teardown —
@@ -520,6 +542,11 @@ pub fn open_pty(
     if let Some(resume_id) = &resume {
         cmd.arg("--resume");
         cmd.arg(resume_id);
+    }
+    // After `--`, so a variadic flag like --mcp-config can't swallow it.
+    if let Some(p) = prompt.filter(|p| resume.is_none() && !p.trim().is_empty()) {
+        cmd.arg("--");
+        cmd.arg(p);
     }
 
     let child = pair.slave.spawn_command(cmd).map_err(|e| e.to_string())?;
@@ -609,6 +636,7 @@ pub fn open_pty(
             last_active,
             client_sizes: HashMap::new(),
             pinned: None,
+            mcp_key,
             started_at_ms: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
