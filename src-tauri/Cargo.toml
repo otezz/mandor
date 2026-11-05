@@ -35,6 +35,8 @@ futures-util = "0.3.34"
 mime_guess = "2.0.5"
 # Split the user's "open in editor" command line (quoted paths/args).
 shell-words = "1.1.1"
+# Per-session keys for the session tools (mcp.rs).
+getrandom = "0.3"
 
 [target.'cfg(unix)'.dependencies]
 # Stops the whole `code serve-web` process group (see webeditor.rs).

@@ -357,6 +357,7 @@ async fn dispatch(app: &AppHandle, command: &str, args: Value) -> Result<Value, 
                 flag(&args, "incognito"),
                 opt_str(&args, "profileId"),
                 flag(&args, "yolo"),
+                opt_str(&args, "prompt"),
             )?;
             Ok(Value::Null)
         }
