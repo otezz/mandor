@@ -3597,10 +3597,14 @@ const sessionTools = {
       live: false,
     });
     s.createdBy = caller;
-    s.wantPrompt =
+    const header =
       `[Mandor: this session was created by session ${from}. To report back ` +
       `or ask it something, use the mandor send_message tool with session ` +
-      `"${caller}".]\n\n${prompt}`;
+      `"${caller}".]`;
+    // claude only runs a slash command that starts the message.
+    s.wantPrompt = prompt.trimStart().startsWith("/")
+      ? `${prompt.trimStart()}\n\n${header}`
+      : `${header}\n\n${prompt}`;
     addRecentDir(cwd);
     renderSessionList();
     persist();
