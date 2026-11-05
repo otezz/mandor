@@ -180,7 +180,7 @@ fn tools() -> Value {
                 "properties": {
                     "group": { "type": "string", "description": "Group name or id (see list_sessions). Omit to pick by folder." },
                     "name": { "type": "string", "description": "Short session name, e.g. the ticket and topic. The group's prefix is added." },
-                    "prompt": { "type": "string", "description": "The first message: a self-contained brief of the work." },
+                    "prompt": { "type": "string", "description": "The first message: a self-contained brief of the work. It may start with a slash command, e.g. \"/some-skill args\" followed by the brief." },
                     "cwd": { "type": "string", "description": "Folder to run in. Defaults to the group's folder." },
                     "worktree": { "type": "boolean", "description": "Run in a new git worktree. Defaults to the group's setting." },
                     "model": { "type": "string", "description": "Model alias such as opus or sonnet. Defaults to the group's." }
