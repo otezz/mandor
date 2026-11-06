@@ -1,6 +1,8 @@
 // Prevents an additional console window on Windows in release. DO NOT REMOVE.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+#[cfg(target_os = "linux")]
+mod appicon;
 mod mcp;
 mod pty;
 mod push;
@@ -461,12 +463,30 @@ const KNOWN_EDITORS: &[(&str, &str)] = &[
 struct Editor {
     name: &'static str,
     command: &'static str,
+    /// A `data:` URL; none where the app's icon can't be found.
+    icon: Option<String>,
+}
+
+fn with_icons(apps: Vec<Editor>) -> Vec<Editor> {
+    #[cfg(target_os = "linux")]
+    {
+        let dirs = appicon::data_dirs();
+        return apps
+            .into_iter()
+            .map(|a| Editor {
+                icon: appicon::icon_for(a.command, &dirs),
+                ..a
+            })
+            .collect();
+    }
+    #[allow(unreachable_code)]
+    apps
 }
 
 /// The known editors installed here, for the "Open in editor" dropdown.
 #[tauri::command]
 async fn detect_editors() -> Vec<Editor> {
-    tauri::async_runtime::spawn_blocking(|| installed_editors(&path_dirs()))
+    tauri::async_runtime::spawn_blocking(|| with_icons(installed_editors(&path_dirs())))
         .await
         .unwrap_or_default()
 }
@@ -478,7 +498,11 @@ fn installed_editors(dirs: &[PathBuf]) -> Vec<Editor> {
             continue;
         }
         if dirs.iter().any(|d| is_program(d, command)) {
-            found.push(Editor { name, command });
+            found.push(Editor {
+                name,
+                command,
+                icon: None,
+            });
         }
     }
     // Without the optional `code` CLI, launch_editor still opens the app bundle.
@@ -491,6 +515,7 @@ fn installed_editors(dirs: &[PathBuf]) -> Vec<Editor> {
             Editor {
                 name: "VS Code",
                 command: "code",
+                icon: None,
             },
         );
     }
@@ -667,7 +692,7 @@ impl KnownTerminal {
 /// The known terminals installed here, for the "Open in terminal" dropdown.
 #[tauri::command]
 async fn detect_terminals() -> Vec<Editor> {
-    tauri::async_runtime::spawn_blocking(|| installed_terminals(&path_dirs()))
+    tauri::async_runtime::spawn_blocking(|| with_icons(installed_terminals(&path_dirs())))
         .await
         .unwrap_or_default()
 }
@@ -691,6 +716,7 @@ fn installed_terminals(dirs: &[PathBuf]) -> Vec<Editor> {
         .map(|t| Editor {
             name: t.name,
             command: t.command,
+            icon: None,
         })
         .collect()
 }

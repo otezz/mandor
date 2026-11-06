@@ -1489,6 +1489,54 @@ body.engine-ghostty .xterm-only {
   background: var(--accent-bg);
 }
 
+.dropdown-menu .launch-item,
+.ns-menu .launch-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+#editor-menu,
+#terminal-menu {
+  max-width: 340px;
+}
+
+.launch-name {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.app-icon-slot {
+  display: inline-flex;
+  flex: none;
+}
+
+.app-icon {
+  width: 18px;
+  height: 18px;
+  flex: none;
+  object-fit: contain;
+}
+
+.app-icon-letter {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 4px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.set-launch {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
 .ns-menu-item.current {
   color: var(--accent);
 }

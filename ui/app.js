@@ -1800,19 +1800,80 @@ const launchMenus = {
     open: openInTerminal,
   },
 };
-async function buildLaunchMenu(kind) {
+const firstWord = (cmd) => (cmd || "").trim().split(/\s+/)[0];
+
+// The app an icon was found for, else its initial on a tile.
+function appIcon(app) {
+  if (app?.icon) {
+    return Object.assign(document.createElement("img"), {
+      className: "app-icon",
+      src: app.icon,
+      alt: "",
+    });
+  }
+  return Object.assign(document.createElement("span"), {
+    className: "app-icon app-icon-letter",
+    textContent: (app?.name || "?").trim().charAt(0).toUpperCase(),
+  });
+}
+
+async function detectLaunchApps(kind) {
   const m = launchMenus[kind];
   m.detected ??= (await invoke(m.detect).catch(() => null)) || [];
-  const current = settings[m.setting] || m.fallback(m.detected);
+  return m.detected;
+}
+
+// What the setting runs: a detected app, or a custom command shown with the
+// icon of the detected app it starts (e.g. ghostty with extra flags).
+function launchChoice(kind) {
+  const m = launchMenus[kind];
+  const found = m.detected || [];
+  const command = settings[m.setting] || m.fallback(found);
+  const exact = found.find((x) => x.command === command);
+  if (exact) return { ...exact, custom: false };
+  const base = found.find((x) => firstWord(x.command) === firstWord(command));
+  return {
+    name: command,
+    command,
+    icon: base?.icon,
+    custom: !!settings[m.setting],
+  };
+}
+
+function launchItem(app, current, className) {
+  const b = document.createElement("button");
+  b.type = "button";
+  b.className = className + (current ? " current" : "");
+  b.title = app.command;
+  const name = Object.assign(document.createElement("span"), {
+    className: "launch-name",
+    textContent: app.name,
+  });
+  b.append(appIcon(app), name);
+  if (current) b.append("✓");
+  return b;
+}
+
+function launchCustomItem(current, className) {
+  const b = launchItem(
+    { name: "Custom command…", command: "" },
+    current,
+    className,
+  );
+  b.querySelector(".app-icon").textContent = "…";
+  return b;
+}
+
+async function buildLaunchMenu(kind) {
+  const m = launchMenus[kind];
+  await detectLaunchApps(kind);
+  const choice = launchChoice(kind);
   const items = [...m.detected];
-  if (current && !items.some((x) => x.command === current))
-    items.unshift({ name: current, command: current });
+  if (choice.command && !items.some((x) => x.command === choice.command))
+    items.unshift({ ...choice, name: `Custom: ${choice.command}` });
   m.menu.replaceChildren();
   for (const app of items) {
-    const b = document.createElement("button");
-    b.type = "button";
-    b.textContent = app.name + (app.command === current ? "  ✓" : "");
-    b.title = app.command;
+    const b = launchItem(app, app.command === choice.command, "launch-item");
     b.addEventListener("click", () => {
       settings[m.setting] = app.command;
       persist();
@@ -1827,15 +1888,88 @@ async function buildLaunchMenu(kind) {
         className: "dropdown-sep",
       }),
     );
-  const custom = document.createElement("button");
-  custom.type = "button";
-  custom.textContent = "Custom command…";
+  const custom = launchCustomItem(false, "launch-item");
   custom.addEventListener("click", () => {
     openSettings();
     showSettingsSection("general");
-    document.getElementById(m.input).focus();
+    editLaunchCustom(kind);
   });
   m.menu.appendChild(custom);
+}
+
+// Settings: the same choice as a dropdown, with a text box for a custom
+// command, shown while one is in use or being typed.
+async function renderLaunchSetting(kind) {
+  const m = launchMenus[kind];
+  await detectLaunchApps(kind);
+  const choice = launchChoice(kind);
+  document.getElementById(`${m.input}-icon`).replaceChildren(appIcon(choice));
+  document.getElementById(`${m.input}-label`).textContent = choice.custom
+    ? "Custom"
+    : choice.name || "None found";
+  document.getElementById(m.input).hidden = !choice.custom && !m.editingCustom;
+}
+
+function editLaunchCustom(kind) {
+  const m = launchMenus[kind];
+  m.editingCustom = true;
+  const input = document.getElementById(m.input);
+  input.hidden = false;
+  input.focus();
+}
+
+function buildLaunchSettingMenu(kind) {
+  const m = launchMenus[kind];
+  const menu = document.getElementById(`${m.input}-menu`);
+  const choice = launchChoice(kind);
+  menu.replaceChildren();
+  for (const app of m.detected || []) {
+    const b = launchItem(
+      app,
+      !choice.custom && app.command === choice.command,
+      "ns-menu-item launch-item",
+    );
+    b.addEventListener("click", () => {
+      settings[m.setting] = app.command;
+      document.getElementById(m.input).value = app.command;
+      m.editingCustom = false;
+      persist();
+      menu.hidden = true;
+      renderLaunchSetting(kind);
+    });
+    menu.appendChild(b);
+  }
+  if (m.detected?.length)
+    menu.appendChild(
+      Object.assign(document.createElement("div"), {
+        className: "ns-menu-sep",
+      }),
+    );
+  const custom = launchCustomItem(choice.custom, "ns-menu-item launch-item");
+  custom.addEventListener("click", () => {
+    menu.hidden = true;
+    editLaunchCustom(kind);
+  });
+  menu.appendChild(custom);
+}
+
+for (const kind of Object.keys(launchMenus)) {
+  const { input } = launchMenus[kind];
+  const menu = document.getElementById(`${input}-menu`);
+  document.getElementById(`${input}-btn`).addEventListener("click", (e) => {
+    e.stopPropagation();
+    const willOpen = menu.hidden;
+    closeLaunchSettingMenus();
+    if (willOpen) {
+      buildLaunchSettingMenu(kind);
+      menu.hidden = false;
+    }
+  });
+}
+
+function closeLaunchSettingMenus() {
+  for (const { input } of Object.values(launchMenus))
+    document.getElementById(`${input}-menu`).hidden = true;
 }
 
 function openContextMenu(e, kind, id) {
@@ -4338,6 +4472,7 @@ document.addEventListener("click", () => {
   if (!POPOUT) attentionMenu.hidden = true;
   editorMenu.hidden = true;
   terminalMenu.hidden = true;
+  closeLaunchSettingMenus();
 });
 document
   .getElementById("sidebar-settings")
@@ -5530,6 +5665,11 @@ function openSettings() {
   document.getElementById("set-editor").value = settings.editorCommand || "";
   document.getElementById("set-terminal").value =
     settings.terminalCommand || "";
+  closeLaunchSettingMenus();
+  for (const kind of Object.keys(launchMenus)) {
+    launchMenus[kind].editingCustom = false;
+    renderLaunchSetting(kind);
+  }
   document.getElementById("set-fontsize").value =
     settings.terminalFontSize || 11;
   document.getElementById("set-copy-on-select").checked = copyOnSelect;
@@ -5700,10 +5840,12 @@ document
 document.getElementById("set-editor").addEventListener("change", (e) => {
   settings.editorCommand = e.target.value.trim();
   persist();
+  renderLaunchSetting("editor");
 });
 document.getElementById("set-terminal").addEventListener("change", (e) => {
   settings.terminalCommand = e.target.value.trim();
   persist();
+  renderLaunchSetting("terminal");
 });
 document.getElementById("set-claude-path").addEventListener("change", (e) => {
   settings.claudePath = e.target.value.trim();
