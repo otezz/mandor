@@ -721,36 +721,62 @@
               </label>
               <div class="set-row" id="set-editor-row">
                 <span class="set-row-text">
-                  <span class="set-label">Editor command</span>
+                  <span class="set-label">Editor</span>
                   <span class="set-hint"
-                    >For “Open in editor”; the session's folder is added at the
-                    end. Blank uses VS Code.</span
+                    >For “Open in editor”. A custom command gets the session's
+                    folder added at the end.</span
                   >
                 </span>
-                <input
-                  id="set-editor"
-                  class="ns-input set-control-text"
-                  type="text"
-                  spellcheck="false"
-                  placeholder="code"
-                />
+                <div class="set-control set-launch">
+                  <div class="ns-dropdown">
+                    <button id="set-editor-btn" class="ns-dd-btn" type="button">
+                      <span id="set-editor-icon" class="app-icon-slot"></span>
+                      <span id="set-editor-label" class="ns-dd-label"></span>
+                      <span class="ns-caret">▾</span>
+                    </button>
+                    <div id="set-editor-menu" class="ns-menu" hidden></div>
+                  </div>
+                  <input
+                    id="set-editor"
+                    class="ns-input"
+                    type="text"
+                    spellcheck="false"
+                    placeholder="code --wait"
+                    hidden
+                  />
+                </div>
               </div>
               <div class="set-row" id="set-terminal-row">
                 <span class="set-row-text">
-                  <span class="set-label">Terminal command</span>
+                  <span class="set-label">Terminal</span>
                   <span class="set-hint"
-                    >For “Open in terminal”; it starts in the session's folder,
-                    and <code>{path}</code> is replaced with it. Blank uses the
-                    first terminal found.</span
+                    >For “Open in terminal”. A custom command starts in the
+                    session's folder, and <code>{path}</code> is replaced with
+                    it.</span
                   >
                 </span>
-                <input
-                  id="set-terminal"
-                  class="ns-input set-control-text"
-                  type="text"
-                  spellcheck="false"
-                  placeholder="ghostty --working-directory={path}"
-                />
+                <div class="set-control set-launch">
+                  <div class="ns-dropdown">
+                    <button
+                      id="set-terminal-btn"
+                      class="ns-dd-btn"
+                      type="button"
+                    >
+                      <span id="set-terminal-icon" class="app-icon-slot"></span>
+                      <span id="set-terminal-label" class="ns-dd-label"></span>
+                      <span class="ns-caret">▾</span>
+                    </button>
+                    <div id="set-terminal-menu" class="ns-menu" hidden></div>
+                  </div>
+                  <input
+                    id="set-terminal"
+                    class="ns-input"
+                    type="text"
+                    spellcheck="false"
+                    placeholder="ghostty --working-directory={path}"
+                    hidden
+                  />
+                </div>
               </div>
             </section>
 
