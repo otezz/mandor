@@ -40,7 +40,8 @@ create_session to hand work to a new session in another group (for example a fro
 counterpart of backend work) or to spawn sub-sessions as a coordinator: its prompt must be \
 self-contained, because the new session starts with no knowledge of this conversation. \
 Messages from other sessions arrive as user turns starting with [Mandor: message from \
-session ...]; answer them with send_message, not in your own reply.";
+session ...]; answer them with send_message, not in your own reply. send_message only reaches \
+a running session: start a suspended or not-running one first with resume_session.";
 
 #[derive(Default)]
 pub struct McpState {
@@ -203,9 +204,24 @@ fn tools() -> Value {
             }
         },
         {
+            "name": "resume_session",
+            "description": "Start a suspended or not-running Mandor session again with its \
+    conversation history, as if the user clicked it in the sidebar, without sending it anything. \
+    Returns once it has loaded, so send_message can follow straight away.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session": { "type": "string", "description": "Session id, or its exact name." }
+                },
+                "required": ["session"]
+            }
+        },
+        {
             "name": "list_sessions",
             "description": "List Mandor's groups and sessions with each session's id, name, group, \
-    folder, status (working, needs-attention, idle, not-running) and who created it.",
+    folder, status and who created it. Status is working, needs-attention or idle for a running \
+    session; suspended or not-running for one resume_session can start again; exited when claude \
+    has quit.",
             "inputSchema": { "type": "object", "properties": {} }
         }
     ])

@@ -3740,6 +3740,8 @@ listen("pty-exit", ({ payload }) => {
 // Mandor's MCP server. The backend forwards each call here, to the window that
 // owns the calling session, because this window owns the session list.
 const MAX_CREATED_LIVE = 10;
+const RESUME_QUIET_MS = 1500;
+const RESUME_SETTLE_MAX_MS = 15000;
 
 function sessionStatus(s) {
   if (s.live)
@@ -3833,7 +3835,7 @@ const sessionTools = {
     if (target.id === caller) throw new Error("that is your own session");
     if (!target.live)
       throw new Error(
-        `session "${target.name}" is ${sessionStatus(target)}; ask the user to open it`,
+        `session "${target.name}" is ${sessionStatus(target)}; resume it first with resume_session`,
       );
     const status = sessionStatus(target);
     const me = sessions.get(caller);
@@ -3849,6 +3851,36 @@ const sessionTools = {
     return status === "working"
       ? `Sent to "${target.name}". It was busy, so claude queued the message.`
       : `Sent to "${target.name}".`;
+  },
+
+  // The same as clicking a cold session in the sidebar, without focusing it.
+  // Waits for the resumed claude to finish replaying, so a message sent next
+  // lands in a ready prompt.
+  async resume_session(caller, a) {
+    const target = findSessionRef(String(a.session || ""));
+    if (target.live)
+      return `"${target.name}" is already running (${sessionStatus(target)}).`;
+    if (target.exited)
+      throw new Error(
+        `session "${target.name}" has exited; ask the user to restart it`,
+      );
+    if (target.incognito)
+      throw new Error(
+        `session "${target.name}" is incognito, so it has no history to resume`,
+      );
+    if (!target.term) attachTerminal(target);
+    await spawnSession(target);
+    if (target.exited)
+      throw new Error(`claude failed to resume "${target.name}"`);
+    renderSessionList();
+    persist();
+    const deadline = Date.now() + RESUME_SETTLE_MAX_MS;
+    do await sleep(500);
+    while (
+      Date.now() - target.lastActivityMs < RESUME_QUIET_MS &&
+      Date.now() < deadline
+    );
+    return `Resumed "${target.name}" with its history; it is ${sessionStatus(target)}.`;
   },
 
   async list_sessions(caller) {
