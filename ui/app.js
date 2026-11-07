@@ -3750,6 +3750,22 @@ function sessionStatus(s) {
   return s.exited ? "exited" : "not-running";
 }
 
+// The last `count` lines of a terminal's scrollback that end in content, as
+// plain text; null if the engine has no buffer API.
+function screenText(term, count) {
+  try {
+    const buf = term.buffer.active;
+    const line = (i) => buf.getLine(i)?.translateToString(true) ?? "";
+    let end = buf.length;
+    while (end > 0 && !line(end - 1).trim()) end--;
+    const out = [];
+    for (let i = Math.max(0, end - count); i < end; i++) out.push(line(i));
+    return out.join("\n");
+  } catch {
+    return null;
+  }
+}
+
 function findGroup(ref) {
   const r = String(ref).trim().toLowerCase();
   return groups.find((g) => g.id === ref || g.name.toLowerCase() === r);
@@ -3881,6 +3897,24 @@ const sessionTools = {
       Date.now() < deadline
     );
     return `Resumed "${target.name}" with its history; it is ${sessionStatus(target)}.`;
+  },
+
+  async read_session(caller, a) {
+    const target = findSessionRef(String(a.session || ""));
+    const lines = Math.min(Math.max(Math.round(Number(a.lines)) || 80, 1), 400);
+    const status = sessionStatus(target);
+    const screen =
+      target.live && target.term ? screenText(target.term, lines) : null;
+    if (screen)
+      return `"${target.name}" is ${status}. Its last ${lines} terminal lines:\n\n${screen}`;
+    const tail = await invoke("session_tail", {
+      id: target.id,
+      profileId: PROFILE_ID,
+      maxChars: lines * 120,
+    });
+    return tail
+      ? `"${target.name}" is ${status}. The end of its conversation:\n\n${tail}`
+      : `"${target.name}" is ${status} and has no saved conversation to read.`;
   },
 
   async list_sessions(caller) {

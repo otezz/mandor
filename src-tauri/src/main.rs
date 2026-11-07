@@ -38,7 +38,7 @@ fn save_window_geometry(app: &tauri::AppHandle) {
         }
     }
 }
-use sessions::{list_sessions, session_cwd, session_pr};
+use sessions::{list_sessions, session_cwd, session_pr, session_tail};
 
 /// Cache file for the resolved login-shell PATH (see `ensure_tools_on_path`), under
 /// the platform cache dir — mirrors `incognito_base`.
@@ -1071,6 +1071,7 @@ fn main() {
             read_audio_data,
             session_pr,
             session_cwd,
+            session_tail,
             open_session_window,
             open_profile_window,
             show_main_window,
