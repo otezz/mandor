@@ -183,21 +183,85 @@ fn find_transcript(id: &str, profile_id: Option<&str>) -> Option<PathBuf> {
 /// The last `cwd` in a transcript, reading only its tail — transcripts run to
 /// many MB, and every entry carries the cwd at the time it was written.
 fn last_cwd(path: &Path) -> Option<String> {
-    const TAIL_BYTES: u64 = 256 * 1024;
+    read_tail(path, 256 * 1024)?.lines().rev().find_map(|line| {
+        let entry = serde_json::from_str::<Value>(line).ok()?;
+        let cwd = entry.get("cwd")?.as_str()?;
+        (!cwd.is_empty()).then(|| cwd.to_string())
+    })
+}
+
+fn read_tail(path: &Path, bytes: u64) -> Option<String> {
     let mut file = File::open(path).ok()?;
     let len = file.metadata().ok()?.len();
-    file.seek(SeekFrom::Start(len.saturating_sub(TAIL_BYTES)))
-        .ok()?;
+    file.seek(SeekFrom::Start(len.saturating_sub(bytes))).ok()?;
     let mut tail = Vec::new();
     file.read_to_end(&mut tail).ok()?;
-    String::from_utf8_lossy(&tail)
-        .lines()
-        .rev()
-        .find_map(|line| {
-            let entry = serde_json::from_str::<Value>(line).ok()?;
-            let cwd = entry.get("cwd")?.as_str()?;
-            (!cwd.is_empty()).then(|| cwd.to_string())
-        })
+    Some(String::from_utf8_lossy(&tail).into_owned())
+}
+
+/// The end of a session's conversation as plain text, for a session that isn't
+/// running (the read_session tool). At most `max_chars`, cut at a message start.
+#[tauri::command]
+pub async fn session_tail(
+    id: String,
+    profile_id: Option<String>,
+    max_chars: usize,
+) -> Result<Option<String>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let path = find_transcript(&id, profile_id.as_deref())?;
+        Some(conversation_tail(
+            &read_tail(&path, 1024 * 1024)?,
+            max_chars,
+        ))
+    })
+    .await
+    .map_err(|e| e.to_string())
+}
+
+fn conversation_tail(jsonl: &str, max_chars: usize) -> String {
+    let mut messages: Vec<String> = jsonl.lines().filter_map(entry_text).collect();
+    let mut used = 0;
+    let mut keep = 0;
+    for m in messages.iter().rev() {
+        used += m.chars().count() + 2;
+        if used > max_chars && keep > 0 {
+            break;
+        }
+        keep += 1;
+    }
+    let mut tail = messages.split_off(messages.len() - keep).join("\n\n");
+    if tail.chars().count() > max_chars {
+        let skip = tail.chars().count() - max_chars;
+        tail = tail.chars().skip(skip).collect();
+    }
+    tail
+}
+
+/// One transcript line as "user: ..." / "claude: ...", skipping tool results,
+/// command and system envelopes, and anything that isn't a message.
+fn entry_text(line: &str) -> Option<String> {
+    let entry = serde_json::from_str::<Value>(line).ok()?;
+    let who = match entry.get("type")?.as_str()? {
+        "user" => "user",
+        "assistant" => "claude",
+        _ => return None,
+    };
+    let content = entry.get("message")?.get("content")?;
+    let parts: Vec<String> = match content {
+        Value::String(text) => vec![text.clone()],
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter_map(|b| match b.get("type")?.as_str()? {
+                "text" => Some(b.get("text")?.as_str()?.to_string()),
+                "tool_use" => Some(format!("[used {}]", b.get("name")?.as_str()?)),
+                _ => None,
+            })
+            .collect(),
+        _ => return None,
+    };
+    let text = parts.join("\n");
+    let text = text.trim();
+    (!text.is_empty() && !text.starts_with('<')).then(|| format!("{who}: {text}"))
 }
 
 /// Read a transcript for its cwd, first real user message, and the session's
@@ -301,7 +365,7 @@ fn user_text(entry: &Value) -> Option<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{find_transcript, last_cwd};
+    use super::{conversation_tail, find_transcript, last_cwd};
     use std::io::Write;
 
     fn transcript(name: &str, body: &str) -> std::path::PathBuf {
@@ -357,5 +421,36 @@ mod tests {
         for id in ["", "../etc/passwd", "a/b", "abc.jsonl", "x y"] {
             assert_eq!(find_transcript(id, None), None, "id {id:?}");
         }
+    }
+
+    #[test]
+    fn conversation_tail_keeps_messages_and_skips_noise() {
+        let jsonl = [
+            r#"{"type":"user","message":{"role":"user","content":"fix the bug"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Looking."},{"type":"tool_use","name":"Read","input":{}}]}}"#,
+            r#"{"type":"user","message":{"content":[{"type":"tool_result","content":"file body"}]}}"#,
+            r#"{"type":"user","message":{"content":"<command-name>/clear</command-name>"}}"#,
+            r#"{"type":"custom-title","customTitle":"x"}"#,
+            r#"not json"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Fixed it."}]}}"#,
+        ]
+        .join("\n");
+        assert_eq!(
+            conversation_tail(&jsonl, 10_000),
+            "user: fix the bug\n\nclaude: Looking.\n[used Read]\n\nclaude: Fixed it."
+        );
+    }
+
+    #[test]
+    fn conversation_tail_keeps_the_newest_messages_within_the_limit() {
+        let jsonl = [
+            r#"{"type":"user","message":{"content":"first message"}}"#,
+            r#"{"type":"assistant","message":{"content":[{"type":"text","text":"second"}]}}"#,
+        ]
+        .join("\n");
+        assert_eq!(conversation_tail(&jsonl, 20), "claude: second");
+        // A single message longer than the limit keeps its end.
+        assert_eq!(conversation_tail(&jsonl, 6), "second");
+        assert_eq!(conversation_tail("", 100), "");
     }
 }

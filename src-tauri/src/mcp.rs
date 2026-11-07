@@ -217,6 +217,20 @@ fn tools() -> Value {
             }
         },
         {
+            "name": "read_session",
+            "description": "Read what another Mandor session is showing: the last lines of its \
+    terminal while it runs, or the end of its saved conversation when it isn't running. Use it to \
+    check on a session's progress, an error, or a prompt it is waiting on, without messaging it.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session": { "type": "string", "description": "Session id, or its exact name." },
+                    "lines": { "type": "integer", "description": "How many terminal lines to read, 1 to 400. Defaults to 80." }
+                },
+                "required": ["session"]
+            }
+        },
+        {
             "name": "list_sessions",
             "description": "List Mandor's groups and sessions with each session's id, name, group, \
     folder, status and who created it. Status is working, needs-attention or idle for a running \
