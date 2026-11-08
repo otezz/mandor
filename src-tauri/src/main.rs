@@ -1089,12 +1089,18 @@ fn main() {
             store::save_store,
             store::get_remote_config,
             store::save_remote_config,
+<<<<<<< HEAD
             push::push_public_key,
             push::push_subscribe,
             push::push_unsubscribe,
             push::push_notify,
             webserver::browse_dir,
             mcp::mcp_reply
+=======
+            store::get_profiles,
+            store::save_profiles,
+            webserver::browse_dir
+>>>>>>> remote-profiles
         ])
         .build(tauri::generate_context!())
         .expect("error while building Mandor")

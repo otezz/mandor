@@ -2364,7 +2364,6 @@ body.remote #sidebar-quit,
 body.remote #editor-pick-btn,
 body.remote .terminal-split,
 body.remote #set-terminal-row,
-body.remote #sidebar-profiles,
 body.remote #set-bell-file-btn,
 body.remote [data-section="remote"] {
   display: none !important;
