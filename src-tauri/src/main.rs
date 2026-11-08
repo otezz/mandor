@@ -896,6 +896,8 @@ fn main() {
             store::save_store,
             store::get_remote_config,
             store::save_remote_config,
+            store::get_profiles,
+            store::save_profiles,
             webserver::browse_dir
         ])
         .build(tauri::generate_context!())

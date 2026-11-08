@@ -108,7 +108,7 @@ fn incognito_base() -> Option<PathBuf> {
 /// Where persistent per-profile config dirs live. Unlike incognito this is DURABLE
 /// (the data dir, not the cache dir) and is NEVER swept — a profile keeps its own
 /// login, settings, MCP servers, and session history across restarts. Dev builds
-/// keep their own, since their profile list lives in a separate webview store.
+/// keep their own, like their profile list (`store::get_profiles`).
 fn profiles_base() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
     let data = std::env::var_os("HOME")
