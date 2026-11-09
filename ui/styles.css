@@ -1131,6 +1131,27 @@ body.engine-ghostty .xterm-only {
   display: none;
 }
 
+.pending-bar {
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 44;
+  max-width: calc(100% - 28px);
+  background: var(--bg-alt);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 6px 12px;
+  font-size: 12px;
+  color: var(--fg);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.35);
+  pointer-events: none;
+}
+
+.pending-bar[hidden] {
+  display: none;
+}
+
 .find-input {
   width: 180px;
   background: var(--bg);
