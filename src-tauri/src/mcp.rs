@@ -192,9 +192,8 @@ fn tools() -> Value {
         {
             "name": "send_message",
             "description": "Type a message into another running Mandor session and submit it, as if \
-    the user typed it. If that session is busy, claude queues it. If the user has unsent text in \
-    its input box, Mandor holds the message until they send or clear it. The message is prefixed \
-    with your session's name and id so the recipient can reply.",
+    the user typed it. If that session is busy, claude queues it. The message is prefixed with \
+    your session's name and id so the recipient can reply.",
             "inputSchema": {
                 "type": "object",
                 "properties": {

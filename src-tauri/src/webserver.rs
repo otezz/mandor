@@ -362,12 +362,7 @@ async fn dispatch(app: &AppHandle, command: &str, args: Value) -> Result<Value, 
             Ok(Value::Null)
         }
         "write_pty" => {
-            pty::write_pty(
-                app.clone(),
-                pty_state,
-                req_str(&args, "id")?,
-                req_str(&args, "data")?,
-            )?;
+            pty::write_pty(pty_state, req_str(&args, "id")?, req_str(&args, "data")?)?;
             Ok(Value::Null)
         }
         "resize_pty" => {
@@ -519,7 +514,7 @@ async fn ws_handler(State(app): State<AppHandle>, uri: Uri, ws: WebSocketUpgrade
     ws.on_upgrade(move |socket| bridge(socket, app, client_id))
 }
 
-const BRIDGED_EVENTS: [&str; 4] = ["pty-output", "pty-exit", "pty-pending", "store-update"];
+const BRIDGED_EVENTS: [&str; 3] = ["pty-output", "pty-exit", "store-update"];
 
 async fn bridge(socket: WebSocket, app: AppHandle, client_id: Option<String>) {
     let (mut sender, mut receiver) = socket.split();
