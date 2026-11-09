@@ -234,7 +234,6 @@ let settings = {
   suspendIdle: false, // auto-suspend sessions idle this long, freeing their memory
   suspendIdleHours: 3,
   customThemes: [],
-  pendingBannerPos: "top-right", // corner for "message waiting" banners
 };
 
 // Terminal font size is in points (like Ghostty et al.); xterm wants px, so
@@ -2820,7 +2819,7 @@ function visibleIds() {
 // Shows/hides each terminal-host, marks the focused pane, and fits every visible
 // terminal (fit() → term.onResize → resize_pty, so the PTY tracks its pane size).
 function renderView() {
-  renderPendingBanners();
+  updatePendingBar();
   const visible = visibleIds();
   const split = viewMode === "split" && visible.length > 1;
   termsEl.classList.toggle("split", split);
@@ -3473,8 +3472,8 @@ async function syncRemoteLiveState() {
     for (const { id, idleMs, startedAtMs, pending } of running) {
       const s = sessions.get(id);
       if (!s || s.spawning) continue;
-      if ((pending?.length || 0) !== (s.pendingMessages?.length || 0))
-        setPendingMessages(s, pending || []);
+      if ((pending || 0) !== (s.pendingMessages || 0))
+        setPendingMessages(s, pending || 0);
       if (!s.live) adopt(s, startedAtMs, idleMs);
       else if (s.ptyStartedAt === undefined) s.ptyStartedAt = startedAtMs;
       else if (s.ptyStartedAt !== startedAtMs) adopt(s, startedAtMs, idleMs);
@@ -3522,118 +3521,37 @@ listen("pty-output", ({ payload }) => {
   if (!POPOUT) markWorking(s, bytes.length); // drive the sidebar activity indicator
 });
 
-// Messages from other sessions held back so they aren't submitted together
-// with what the user is typing (send_to_pty in pty.rs): one banner per session,
-// in the corner picked in Settings, until they're delivered or dropped.
-function pendingNode(tag, props, children = []) {
-  const node = Object.assign(document.createElement(tag), props);
-  node.append(...children);
-  return node;
+// A message from another session held back so it isn't submitted together
+// with what the user is typing (send_to_pty in pty.rs).
+function updatePendingBar() {
+  const pendingBar = document.getElementById("pending-bar");
+  const n = sessions.get(activeId)?.pendingMessages || 0;
+  pendingBar.hidden = !n;
+  pendingBar.textContent =
+    (n > 1
+      ? `${n} messages from other sessions are`
+      : "A message from another session is") +
+    " waiting. Send or clear (Ctrl+C) what you're typing to let it in.";
 }
-const BANNER_POSITIONS = [
-  "top-right",
-  "top-left",
-  "bottom-right",
-  "bottom-left",
-];
-function bannerPosition() {
-  return BANNER_POSITIONS.includes(settings.pendingBannerPos)
-    ? settings.pendingBannerPos
-    : "top-right";
-}
-function renderPendingBanners() {
-  const box = document.getElementById("pending-banners");
-  box.dataset.pos = bannerPosition();
-  const shown = new Set();
-  for (const s of sessions.values()) {
-    const msgs = s.pendingMessages || [];
-    if (!msgs.length || msgs.length <= (s.pendingHiddenAt || 0)) continue;
-    shown.add(s.id);
-    let card = box.querySelector(`[data-session="${CSS.escape(s.id)}"]`);
-    if (!card) {
-      card = pendingNode("div", { className: "pending-card" });
-      card.setAttribute("role", "status");
-      card.dataset.session = s.id;
-      box.appendChild(card);
-    }
-    if (Number(card.dataset.count) !== msgs.length) {
-      card.dataset.count = String(msgs.length);
-      card.classList.remove("flash");
-      void card.offsetWidth; // restart the animation for a new message
-      card.classList.add("flash");
-    }
-    const latest = msgs[msgs.length - 1];
-    const open = pendingNode("button", {
-      className: "set-ghost",
-      textContent: "Open",
-    });
-    open.addEventListener("click", () => {
-      setActive(s.id);
-      s.term?.focus();
-    });
-    const drop = pendingNode("button", {
-      className: "set-ghost",
-      textContent: "Drop",
-    });
-    drop.title = "Discard the waiting message without delivering it";
-    drop.addEventListener("click", () =>
-      invoke("drop_pending", { id: s.id }).catch((e) =>
-        showToast(`Couldn't drop it: ${e?.message || e}`, true),
-      ),
+function setPendingMessages(s, count) {
+  const was = s.pendingMessages || 0;
+  s.pendingMessages = count;
+  if (count > was && !POPOUT)
+    showToast(
+      `Message for "${s.name}" waiting: send or clear your draft (Ctrl+C) to let it in`,
+      false,
+      5000,
     );
-    const hide = pendingNode("button", {
-      className: "set-ghost",
-      textContent: "Hide",
-    });
-    hide.title = "Hide until another message arrives; this one still waits";
-    hide.addEventListener("click", () => {
-      s.pendingHiddenAt = msgs.length;
-      renderPendingBanners();
-    });
-    card.replaceChildren(
-      pendingNode("div", {
-        className: "pending-head",
-        textContent:
-          msgs.length > 1
-            ? `${msgs.length} messages waiting for "${s.name}"`
-            : `Message waiting for "${s.name}"`,
-      }),
-      pendingNode("div", {
-        className: "pending-from",
-        textContent: `${msgs.length > 1 ? "Latest from" : "From"} "${latest.from}"`,
-      }),
-      pendingNode("div", {
-        className: "pending-preview",
-        textContent: latest.message,
-      }),
-      pendingNode("div", {
-        className: "pending-hint",
-        textContent:
-          "It goes in when you send or clear (Ctrl+C) what you're typing there.",
-      }),
-      pendingNode("div", { className: "pending-actions" }, [
-        ...(s.id === activeId ? [] : [open]),
-        drop,
-        hide,
-      ]),
-    );
-  }
-  for (const card of [...box.children])
-    if (!shown.has(card.dataset.session)) card.remove();
-}
-function setPendingMessages(s, messages) {
-  s.pendingMessages = messages;
-  if (!messages.length) s.pendingHiddenAt = 0;
-  renderPendingBanners();
+  updatePendingBar();
 }
 listen("pty-pending", ({ payload }) => {
   const s = sessions.get(payload.id);
-  if (s) setPendingMessages(s, payload.messages || []);
+  if (s) setPendingMessages(s, payload.count);
 });
 
 listen("pty-exit", ({ payload }) => {
   const s = sessions.get(payload.id);
-  if (s?.pendingMessages?.length) setPendingMessages(s, []); // dropped with the PTY
+  if (s?.pendingMessages) setPendingMessages(s, 0); // dropped with the PTY
   if (!s || s.exited) return;
   if (s.suspending) return; // intentional suspend — suspendSession sets the cold state
   s.exited = true;
@@ -3765,12 +3683,7 @@ const sessionTools = {
     const text =
       `[Mandor: message from session "${me?.name ?? caller}" (id ${caller}); ` +
       `reply with send_message]\n${message}`;
-    const sentNow = await invoke("send_to_pty", {
-      id: target.id,
-      text,
-      from: me?.name ?? caller,
-      message,
-    });
+    const sentNow = await invoke("send_to_pty", { id: target.id, text });
     if (!sentNow)
       return (
         `Queued for "${target.name}": the user has unsent text in its input ` +
@@ -5464,7 +5377,6 @@ function openSettings() {
     settings.notifications !== false;
   document.getElementById("set-bell-sound").checked =
     settings.bellSound !== false;
-  document.getElementById("set-banner-pos").value = bannerPosition();
   document.getElementById("set-resume-on-start").checked =
     !!settings.resumeOnStart;
   document.getElementById("set-suspend-idle").checked = !!settings.suspendIdle;
@@ -5639,11 +5551,6 @@ document.getElementById("set-claude-path").addEventListener("change", (e) => {
 document.getElementById("set-notifications").addEventListener("change", (e) => {
   settings.notifications = e.target.checked;
   notificationsEnabled = e.target.checked;
-  persist();
-});
-document.getElementById("set-banner-pos").addEventListener("change", (e) => {
-  settings.pendingBannerPos = e.target.value;
-  renderPendingBanners();
   persist();
 });
 document.getElementById("set-bell-sound").addEventListener("change", (e) => {

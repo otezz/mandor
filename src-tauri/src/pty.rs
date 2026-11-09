@@ -60,7 +60,7 @@ struct PtySession {
     // another session (send_to_pty) never gets submitted along with a draft.
     draft: Draft,
     // Messages from other sessions held back until the draft is gone.
-    pending: Vec<PendingMessage>,
+    pending: Vec<String>,
 }
 
 /// A conservative guess at whether claude's input box is empty, from the keys
@@ -101,19 +101,9 @@ impl Draft {
 }
 
 #[derive(Clone, Serialize)]
-pub struct PendingMessage {
-    // The sending session's name and the message itself, for the UI.
-    from: String,
-    message: String,
-    // What actually gets submitted (the message plus a reply header).
-    #[serde(skip)]
-    text: String,
-}
-
-#[derive(Clone, Serialize)]
 struct PtyPending {
     id: String,
-    messages: Vec<PendingMessage>,
+    count: usize,
 }
 
 /// Recompute and apply a session's real PTY size from its current
@@ -438,7 +428,7 @@ pub struct RunningPty {
     // See PtySession's `started_at_ms`.
     started_at_ms: u64,
     // Messages from other sessions waiting for the user's draft to clear.
-    pending: Vec<PendingMessage>,
+    pending: usize,
 }
 
 /// Kebab-case a display name into a valid worktree segment: lowercase, runs of
@@ -727,12 +717,14 @@ pub fn write_pty(
     session.writer.flush().map_err(|e| e.to_string())?;
     session.draft.note(&data);
     if session.draft.is_empty() && !session.pending.is_empty() {
-        let text = std::mem::take(&mut session.pending)
-            .into_iter()
-            .map(|m| m.text)
-            .collect::<Vec<_>>()
-            .join("\n\n");
-        emit_pending(&app, &id, session);
+        let text = std::mem::take(&mut session.pending).join("\n\n");
+        let _ = app.emit(
+            "pty-pending",
+            PtyPending {
+                id: id.clone(),
+                count: 0,
+            },
+        );
         // Give claude a moment to take the user's own prompt first.
         deliver(state.sessions.clone(), id, text, Duration::from_millis(300));
     }
@@ -748,8 +740,6 @@ pub fn send_to_pty(
     state: State<PtyState>,
     id: String,
     text: String,
-    from: String,
-    message: String,
 ) -> Result<bool, String> {
     let mut map = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = map.get_mut(&id).ok_or("no such session")?;
@@ -757,33 +747,10 @@ pub fn send_to_pty(
         deliver(state.sessions.clone(), id, text, Duration::ZERO);
         return Ok(true);
     }
-    session.pending.push(PendingMessage {
-        from,
-        message,
-        text,
-    });
-    emit_pending(&app, &id, session);
+    session.pending.push(text);
+    let count = session.pending.len();
+    let _ = app.emit("pty-pending", PtyPending { id, count });
     Ok(false)
-}
-
-/// Discard a session's held messages (the user chose not to deliver them).
-#[tauri::command]
-pub fn drop_pending(app: AppHandle, state: State<PtyState>, id: String) -> Result<(), String> {
-    let mut map = state.sessions.lock().map_err(|e| e.to_string())?;
-    let session = map.get_mut(&id).ok_or("no such session")?;
-    session.pending.clear();
-    emit_pending(&app, &id, session);
-    Ok(())
-}
-
-fn emit_pending(app: &AppHandle, id: &str, session: &PtySession) {
-    let _ = app.emit(
-        "pty-pending",
-        PtyPending {
-            id: id.to_string(),
-            messages: session.pending.clone(),
-        },
-    );
 }
 
 /// As a bracketed paste, so newlines don't submit early; then Enter on its own,
@@ -904,7 +871,7 @@ pub fn running_ptys(state: State<PtyState>) -> Vec<RunningPty> {
                         .map(|t| t.elapsed().as_millis() as u64)
                         .unwrap_or(0),
                     started_at_ms: session.started_at_ms,
-                    pending: session.pending.clone(),
+                    pending: session.pending.len(),
                 })
                 .collect()
         })
