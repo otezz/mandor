@@ -2819,6 +2819,7 @@ function visibleIds() {
 // Shows/hides each terminal-host, marks the focused pane, and fits every visible
 // terminal (fit() → term.onResize → resize_pty, so the PTY tracks its pane size).
 function renderView() {
+  updatePendingBar();
   const visible = visibleIds();
   const split = viewMode === "split" && visible.length > 1;
   termsEl.classList.toggle("split", split);
@@ -3468,9 +3469,11 @@ async function syncRemoteLiveState() {
     // Sessions unknown here are deliberately ignored: persisted ones reach this
     // tab as cold pills via store-update (and are adopted on the next pass),
     // and incognito ones are never shared between clients.
-    for (const { id, idleMs, startedAtMs } of running) {
+    for (const { id, idleMs, startedAtMs, pending } of running) {
       const s = sessions.get(id);
       if (!s || s.spawning) continue;
+      if ((pending || 0) !== (s.pendingMessages || 0))
+        setPendingMessages(s, pending || 0);
       if (!s.live) adopt(s, startedAtMs, idleMs);
       else if (s.ptyStartedAt === undefined) s.ptyStartedAt = startedAtMs;
       else if (s.ptyStartedAt !== startedAtMs) adopt(s, startedAtMs, idleMs);
@@ -3518,8 +3521,37 @@ listen("pty-output", ({ payload }) => {
   if (!POPOUT) markWorking(s, bytes.length); // drive the sidebar activity indicator
 });
 
+// A message from another session held back so it isn't submitted together
+// with what the user is typing (send_to_pty in pty.rs).
+function updatePendingBar() {
+  const pendingBar = document.getElementById("pending-bar");
+  const n = sessions.get(activeId)?.pendingMessages || 0;
+  pendingBar.hidden = !n;
+  pendingBar.textContent =
+    (n > 1
+      ? `${n} messages from other sessions are`
+      : "A message from another session is") +
+    " waiting. Send or clear (Ctrl+C) what you're typing to let it in.";
+}
+function setPendingMessages(s, count) {
+  const was = s.pendingMessages || 0;
+  s.pendingMessages = count;
+  if (count > was && !POPOUT)
+    showToast(
+      `Message for "${s.name}" waiting: send or clear your draft (Ctrl+C) to let it in`,
+      false,
+      5000,
+    );
+  updatePendingBar();
+}
+listen("pty-pending", ({ payload }) => {
+  const s = sessions.get(payload.id);
+  if (s) setPendingMessages(s, payload.count);
+});
+
 listen("pty-exit", ({ payload }) => {
   const s = sessions.get(payload.id);
+  if (s?.pendingMessages) setPendingMessages(s, 0); // dropped with the PTY
   if (!s || s.exited) return;
   if (s.suspending) return; // intentional suspend — suspendSession sets the cold state
   s.exited = true;
@@ -3651,12 +3683,12 @@ const sessionTools = {
     const text =
       `[Mandor: message from session "${me?.name ?? caller}" (id ${caller}); ` +
       `reply with send_message]\n${message}`;
-    // As a paste, so newlines don't submit early; then Enter on its own, which
-    // claude would otherwise take as part of the paste.
-    if (target.term) target.term.paste(text);
-    else await invoke("write_pty", { id: target.id, data: text });
-    await sleep(150);
-    await invoke("write_pty", { id: target.id, data: "\r" });
+    const sentNow = await invoke("send_to_pty", { id: target.id, text });
+    if (!sentNow)
+      return (
+        `Queued for "${target.name}": the user has unsent text in its input ` +
+        `box. It goes in as soon as they send or clear it.`
+      );
     return status === "working"
       ? `Sent to "${target.name}". It was busy, so claude queued the message.`
       : `Sent to "${target.name}".`;

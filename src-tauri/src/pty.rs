@@ -56,6 +56,54 @@ struct PtySession {
     // session from the one it already has terminal output for (see
     // running_ptys' started_at_ms).
     started_at_ms: u64,
+    // What the user may have typed into claude's input box, so a message from
+    // another session (send_to_pty) never gets submitted along with a draft.
+    draft: Draft,
+    // Messages from other sessions held back until the draft is gone.
+    pending: Vec<String>,
+}
+
+/// A conservative guess at whether claude's input box is empty, from the keys
+/// sent to it. Enter and Ctrl+C empty it; typing and Backspace are counted;
+/// anything that can change it unseen (arrows recalling history, Tab, a paste
+/// claude may collapse into one token) makes it unknown until the next Enter.
+#[derive(Default)]
+struct Draft {
+    chars: usize,
+    unknown: bool,
+}
+
+impl Draft {
+    fn note(&mut self, data: &str) {
+        match data {
+            "\r" | "\x03" => *self = Draft::default(),
+            // A phone keyboard can send a word and Enter together.
+            _ if data
+                .strip_suffix('\r')
+                .is_some_and(|t| !t.chars().any(char::is_control)) =>
+            {
+                *self = Draft::default()
+            }
+            // Focus reports and mouse events don't touch the input box.
+            "\x1b[I" | "\x1b[O" => {}
+            _ if data.starts_with("\x1b[<") || data.starts_with("\x1b[M") => {}
+            _ if data.chars().all(|c| c == '\x7f' || c == '\x08') => {
+                self.chars = self.chars.saturating_sub(data.chars().count());
+            }
+            _ if !data.chars().any(char::is_control) => self.chars += data.chars().count(),
+            _ => self.unknown = true,
+        }
+    }
+
+    fn is_empty(&self) -> bool {
+        self.chars == 0 && !self.unknown
+    }
+}
+
+#[derive(Clone, Serialize)]
+struct PtyPending {
+    id: String,
+    count: usize,
 }
 
 /// Recompute and apply a session's real PTY size from its current
@@ -379,6 +427,8 @@ pub struct RunningPty {
     idle_ms: u64,
     // See PtySession's `started_at_ms`.
     started_at_ms: u64,
+    // Messages from other sessions waiting for the user's draft to clear.
+    pending: usize,
 }
 
 /// Kebab-case a display name into a valid worktree segment: lowercase, runs of
@@ -641,13 +691,20 @@ pub fn open_pty(
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_millis() as u64)
                 .unwrap_or(0),
+            draft: Draft::default(),
+            pending: Vec::new(),
         },
     );
     Ok(())
 }
 
 #[tauri::command]
-pub fn write_pty(state: State<PtyState>, id: String, data: String) -> Result<(), String> {
+pub fn write_pty(
+    app: AppHandle,
+    state: State<PtyState>,
+    id: String,
+    data: String,
+) -> Result<(), String> {
     let mut map = state.sessions.lock().map_err(|e| e.to_string())?;
     let session = map.get_mut(&id).ok_or("no such session")?;
     if let Ok(mut t) = session.last_active.lock() {
@@ -657,7 +714,69 @@ pub fn write_pty(state: State<PtyState>, id: String, data: String) -> Result<(),
         .writer
         .write_all(data.as_bytes())
         .map_err(|e| e.to_string())?;
-    session.writer.flush().map_err(|e| e.to_string())
+    session.writer.flush().map_err(|e| e.to_string())?;
+    session.draft.note(&data);
+    if session.draft.is_empty() && !session.pending.is_empty() {
+        let text = std::mem::take(&mut session.pending).join("\n\n");
+        let _ = app.emit(
+            "pty-pending",
+            PtyPending {
+                id: id.clone(),
+                count: 0,
+            },
+        );
+        // Give claude a moment to take the user's own prompt first.
+        deliver(state.sessions.clone(), id, text, Duration::from_millis(300));
+    }
+    Ok(())
+}
+
+/// Submit `text` as a message from another session: right away when the
+/// user's input box is empty, else once they send or clear what they typed.
+/// Returns whether it went in now.
+#[tauri::command]
+pub fn send_to_pty(
+    app: AppHandle,
+    state: State<PtyState>,
+    id: String,
+    text: String,
+) -> Result<bool, String> {
+    let mut map = state.sessions.lock().map_err(|e| e.to_string())?;
+    let session = map.get_mut(&id).ok_or("no such session")?;
+    if session.draft.is_empty() && session.pending.is_empty() {
+        deliver(state.sessions.clone(), id, text, Duration::ZERO);
+        return Ok(true);
+    }
+    session.pending.push(text);
+    let count = session.pending.len();
+    let _ = app.emit("pty-pending", PtyPending { id, count });
+    Ok(false)
+}
+
+/// As a bracketed paste, so newlines don't submit early; then Enter on its own,
+/// which claude would otherwise take as part of the paste.
+fn deliver(sessions: Sessions, id: String, text: String, delay: Duration) {
+    let paste = format!(
+        "\x1b[200~{}\x1b[201~",
+        text.replace("\r\n", "\r").replace('\n', "\r")
+    );
+    std::thread::spawn(move || {
+        std::thread::sleep(delay);
+        for (i, chunk) in [paste.as_str(), "\r"].into_iter().enumerate() {
+            if i > 0 {
+                std::thread::sleep(Duration::from_millis(150));
+            }
+            let Ok(mut map) = sessions.lock() else { return };
+            let Some(session) = map.get_mut(&id) else {
+                return;
+            };
+            let _ = session.writer.write_all(chunk.as_bytes());
+            let _ = session.writer.flush();
+            if let Ok(mut t) = session.last_active.lock() {
+                *t = Instant::now();
+            };
+        }
+    });
 }
 
 #[tauri::command]
@@ -752,6 +871,7 @@ pub fn running_ptys(state: State<PtyState>) -> Vec<RunningPty> {
                         .map(|t| t.elapsed().as_millis() as u64)
                         .unwrap_or(0),
                     started_at_ms: session.started_at_ms,
+                    pending: session.pending.len(),
                 })
                 .collect()
         })
@@ -760,7 +880,46 @@ pub fn running_ptys(state: State<PtyState>) -> Vec<RunningPty> {
 
 #[cfg(test)]
 mod tests {
-    use super::{profiles_base, slugify};
+    use super::{profiles_base, slugify, Draft};
+
+    fn typed(keys: &[&str]) -> Draft {
+        let mut d = Draft::default();
+        for k in keys {
+            d.note(k);
+        }
+        d
+    }
+
+    #[test]
+    fn draft_is_empty_until_typing_and_after_enter_or_ctrl_c() {
+        assert!(typed(&[]).is_empty());
+        assert!(!typed(&["h", "i"]).is_empty());
+        assert!(typed(&["h", "i", "\r"]).is_empty());
+        assert!(typed(&["hello", "\x03"]).is_empty());
+        assert!(typed(&["h", "ello\r"]).is_empty());
+    }
+
+    #[test]
+    fn backspacing_a_draft_away_empties_it() {
+        assert!(typed(&["h", "i", "\x7f", "\x7f"]).is_empty());
+        assert!(!typed(&["h", "i", "\x7f"]).is_empty());
+        assert!(typed(&["\x7f", "\x7f"]).is_empty());
+    }
+
+    #[test]
+    fn unseen_changes_hold_until_enter() {
+        // Up recalls history; a paste may collapse; Shift+Enter adds a line.
+        for key in ["\x1b[A", "\x1b[200~text\x1b[201~", "\t", "\x1b\r"] {
+            assert!(!typed(&[key]).is_empty(), "{key:?}");
+            assert!(!typed(&[key, "\x7f", "\x7f"]).is_empty(), "{key:?}");
+            assert!(typed(&[key, "\r"]).is_empty(), "{key:?}");
+        }
+    }
+
+    #[test]
+    fn focus_and_mouse_reports_are_not_typing() {
+        assert!(typed(&["\x1b[I", "\x1b[O", "\x1b[<0;10;5M"]).is_empty());
+    }
 
     #[test]
     fn debug_builds_keep_profiles_apart_from_release() {
