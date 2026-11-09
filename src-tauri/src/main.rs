@@ -23,8 +23,8 @@ use tauri::{
 };
 
 use pty::{
-    claim_control, close_pty, create_profile, delete_profile, open_pty, resize_pty, running_ptys,
-    send_to_pty, set_claude_path, sweep_incognito_dirs, write_pty, PtyState,
+    claim_control, close_pty, create_profile, delete_profile, drop_pending, open_pty, resize_pty,
+    running_ptys, send_to_pty, set_claude_path, sweep_incognito_dirs, write_pty, PtyState,
 };
 use tauri_plugin_window_state::{AppHandleExt, StateFlags, WindowExt};
 
@@ -1080,6 +1080,7 @@ fn main() {
             open_pty,
             write_pty,
             send_to_pty,
+            drop_pending,
             resize_pty,
             claim_control,
             close_pty,

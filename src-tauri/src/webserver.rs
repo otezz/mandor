@@ -378,6 +378,10 @@ async fn dispatch(app: &AppHandle, command: &str, args: Value) -> Result<Value, 
             )?;
             Ok(Value::Null)
         }
+        "drop_pending" => {
+            pty::drop_pending(app.clone(), pty_state, req_str(&args, "id")?)?;
+            Ok(Value::Null)
+        }
         "resize_pty" => {
             pty::resize_pty(
                 pty_state,
