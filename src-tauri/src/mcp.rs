@@ -33,6 +33,10 @@ static PORT: OnceLock<u16> = OnceLock::new();
 
 const PROTOCOL_VERSIONS: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26"];
 const REPLY_TIMEOUT: Duration = Duration::from_secs(20);
+// Tools that wait for the user to approve them in Mandor (the window gives up
+// a little sooner, so its dialog never outlives the call).
+const APPROVAL_TOOLS: &[&str] = &["close_session"];
+const APPROVAL_TIMEOUT: Duration = Duration::from_secs(300);
 
 const INSTRUCTIONS: &str = "You are running inside Mandor, a desktop app that hosts several \
 claude sessions side by side, organised into groups (usually one per repository). Use \
@@ -41,7 +45,8 @@ counterpart of backend work) or to spawn sub-sessions as a coordinator: its prom
 self-contained, because the new session starts with no knowledge of this conversation. \
 Messages from other sessions arrive as user turns starting with [Mandor: message from \
 session ...]; answer them with send_message, not in your own reply. send_message only reaches \
-a running session: start a suspended or not-running one first with resume_session.";
+a running session: start a suspended or not-running one first with resume_session. \
+close_session removes sessions that are not running, once the user approves it.";
 
 #[derive(Default)]
 pub struct McpState {
@@ -231,6 +236,24 @@ fn tools() -> Value {
             }
         },
         {
+            "name": "close_session",
+            "description": "Remove sessions that are not running (exited, suspended or \
+    not-running) from Mandor's sidebar, e.g. ones whose worktree was deleted. Mandor asks the user \
+    to approve first and waits up to a few minutes; if they decline, nothing is closed. A closed \
+    session's conversation stays on disk and can be reopened from Resume.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "sessions": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "1 to 20 session ids or exact names, approved together."
+                    }
+                },
+                "required": ["sessions"]
+            }
+        },
+        {
             "name": "list_sessions",
             "description": "List Mandor's groups and sessions with each session's id, name, group, \
     folder, status and who created it. Status is working, needs-attention or idle for a running \
@@ -268,7 +291,14 @@ async fn call_window(
         }),
     );
     let answer = match sent {
-        Ok(()) => tokio::time::timeout(REPLY_TIMEOUT, rx).await,
+        Ok(()) => {
+            let limit = if APPROVAL_TOOLS.contains(&tool) {
+                APPROVAL_TIMEOUT
+            } else {
+                REPLY_TIMEOUT
+            };
+            tokio::time::timeout(limit, rx).await
+        }
         Err(e) => {
             take_pending(&state, request_id);
             return Err(e.to_string());

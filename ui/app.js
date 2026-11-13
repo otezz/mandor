@@ -3794,6 +3794,52 @@ function findSessionRef(ref) {
   return named[0];
 }
 
+// Asks the user in Mandor itself to approve a session tool's action, whatever
+// the calling claude's own permission settings allow. One dialog at a time.
+const APPROVAL_TIMEOUT_MS = 270000; // under mcp.rs APPROVAL_TIMEOUT
+let approvalChain = Promise.resolve();
+function askApproval({ title, text, items, okLabel, denyLabel }) {
+  const modal = document.getElementById("approve-modal");
+  const okBtn = document.getElementById("approve-ok");
+  const denyBtn = document.getElementById("approve-deny");
+  const run = () =>
+    new Promise((resolve) => {
+      document.getElementById("approve-title").textContent = title;
+      document.getElementById("approve-text").textContent = text;
+      document
+        .getElementById("approve-list")
+        .replaceChildren(
+          ...items.map((item) =>
+            Object.assign(document.createElement("li"), { textContent: item }),
+          ),
+        );
+      okBtn.textContent = okLabel;
+      denyBtn.textContent = denyLabel;
+      const done = (approved) => {
+        clearTimeout(timer);
+        modal.hidden = true;
+        okBtn.onclick = denyBtn.onclick = modal.onkeydown = null;
+        resolve(approved);
+      };
+      const timer = setTimeout(() => done(false), APPROVAL_TIMEOUT_MS);
+      okBtn.onclick = () => done(true);
+      denyBtn.onclick = () => done(false);
+      modal.onkeydown = (e) => {
+        if (e.key === "Escape") done(false);
+      };
+      modal.hidden = false;
+      denyBtn.focus(); // a stray Enter keeps the sessions
+      if (notificationsEnabled && !appInForeground())
+        invoke("notify", {
+          title: "Mandor needs your approval",
+          body: title,
+        }).catch(() => {});
+    });
+  const asked = approvalChain.then(run);
+  approvalChain = asked.catch(() => {});
+  return asked;
+}
+
 const sessionTools = {
   async create_session(caller, a) {
     const parent = sessions.get(caller);
@@ -3855,6 +3901,48 @@ const sessionTools = {
       `Created session "${s.name}" (id ${s.id}) in ${where}, folder ${cwd}` +
       `${worktree ? ", in a new git worktree" : ""}. Your prompt is its first ` +
       `message, and it knows to report back to you with send_message.`
+    );
+  },
+
+  async close_session(caller, a) {
+    const refs = Array.isArray(a.sessions) ? a.sessions.map(String) : [];
+    if (!refs.length) throw new Error("sessions is empty");
+    if (refs.length > 20) throw new Error("at most 20 sessions at a time");
+    const targets = [...new Set(refs.map(findSessionRef))];
+    if (targets.some((t) => t.id === caller))
+      throw new Error("that includes your own session");
+    const running = targets.filter((t) => t.live);
+    if (running.length)
+      throw new Error(
+        `still running: ${running.map((t) => `"${t.name}"`).join(", ")}; only ` +
+          `sessions that aren't running can be closed`,
+      );
+    const from = sessions.get(caller)?.name ?? caller;
+    const approved = await askApproval({
+      title:
+        targets.length > 1
+          ? `Close ${targets.length} sessions?`
+          : `Close "${targets[0].name}"?`,
+      text:
+        `Session "${from}" wants to remove these from the sidebar. Their ` +
+        `conversations stay on disk and can be reopened from Resume.`,
+      items: targets.map((t) =>
+        `${t.name} (${sessionStatus(t)}) ${t.cwd || ""}`.trim(),
+      ),
+      okLabel: "Close",
+      denyLabel: "Keep",
+    });
+    if (!approved)
+      throw new Error("the user declined or didn't answer; nothing was closed");
+    // Re-checked: one may have been closed or started while the user decided.
+    const closable = targets.filter((t) => sessions.get(t.id) === t && !t.live);
+    for (const t of closable) await closeSession(t.id);
+    const skipped = targets.filter((t) => !closable.includes(t));
+    return (
+      `Closed ${closable.map((t) => `"${t.name}"`).join(", ") || "nothing"}.` +
+      (skipped.length
+        ? ` Skipped ${skipped.map((t) => `"${t.name}"`).join(", ")}: closed or started meanwhile.`
+        : "")
     );
   },
 
