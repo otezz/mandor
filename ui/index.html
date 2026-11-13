@@ -562,6 +562,26 @@
       </div>
     </div>
 
+    <div id="approve-modal" class="modal modal-center" hidden>
+      <div class="modal-backdrop"></div>
+      <div
+        class="modal-box modal-form"
+        role="alertdialog"
+        aria-labelledby="approve-title"
+      >
+        <div class="modal-header"><span id="approve-title"></span></div>
+        <p id="approve-text" class="approve-text"></p>
+        <ul id="approve-list" class="approve-list"></ul>
+        <div class="modal-actions">
+          <button
+            id="approve-deny"
+            class="btn-secondary"
+            type="button"
+          ></button>
+          <button id="approve-ok" class="btn-primary" type="button"></button>
+        </div>
+      </div>
+    </div>
     <div id="paste-modal" class="modal modal-center" hidden>
       <div class="modal-backdrop" id="paste-backdrop"></div>
       <div class="modal-box modal-form">
