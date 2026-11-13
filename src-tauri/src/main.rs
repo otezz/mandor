@@ -255,6 +255,11 @@ fn relaunch_path(startup: &AppStartup) -> Option<PathBuf> {
     cleaned.exists().then_some(cleaned)
 }
 
+/// Marks a process started by restart_app. The relaunch inherits our systemd
+/// scope, so after an autostarted launch it would otherwise also look autostarted
+/// and hide to the tray.
+const RELAUNCH_ENV: &str = "MANDOR_RELAUNCH";
+
 /// Relaunch the app (from the "Restart to update" prompt). Live PTYs are killed
 /// via the ExitRequested handler; persisted sessions come back cold, resumable.
 #[tauri::command]
@@ -303,6 +308,7 @@ fn restart_app(app: tauri::AppHandle, startup: tauri::State<'_, AppStartup>) {
             .arg("-c")
             .arg(script)
             .arg(&exe)
+            .env(RELAUNCH_ENV, "1")
             .stdin(std::process::Stdio::null())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -702,6 +708,9 @@ fn main() {
     #[cfg(unix)]
     ensure_tools_on_path();
 
+    let relaunched = std::env::var_os(RELAUNCH_ENV).is_some();
+    std::env::remove_var(RELAUNCH_ENV); // keep it out of session PTYs
+
     // Clear any incognito config dirs left by a previous crash (clean exits delete
     // their own; nothing incognito survives a restart).
     sweep_incognito_dirs();
@@ -747,7 +756,7 @@ fn main() {
                 .and_then(|p| std::fs::metadata(p).ok())
                 .and_then(|m| m.modified().ok()),
         })
-        .setup(|app| {
+        .setup(move |app| {
             // Remote access (optional, off by default): a loopback-only HTTP+WS
             // server serving the same ui/ frontend, reached through a tunnel the
             // user already trusts (SSH port-forward, `tailscale serve`) — see
@@ -819,7 +828,7 @@ fn main() {
                         | StateFlags::FULLSCREEN,
                 );
                 let _ = win.show();
-                if launched_by_gnome_autostart() {
+                if !relaunched && launched_by_gnome_autostart() {
                     // Let the webview map and run its JS (sessions reconnect
                     // there) once, then hide back to tray without ever
                     // stealing focus — same end state as a user opening and
