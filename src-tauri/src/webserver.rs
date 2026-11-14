@@ -36,7 +36,7 @@ use axum::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         DefaultBodyLimit, Path as AxumPath, Query, State,
     },
-    http::{StatusCode, Uri},
+    http::{header, HeaderMap, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -75,7 +75,7 @@ async fn run(app: AppHandle, config: RemoteConfig) -> Result<(), String> {
         .route("/ws", get(ws_handler))
         .route("/api/invoke/{command}", post(invoke_handler))
         .route("/api/upload", upload_route())
-        .fallback(get(asset_handler))
+        .fallback(get(asset_handler).layer(tower_http::compression::CompressionLayer::new()))
         .layer(axum::middleware::from_fn(move |req, next| {
             check_token(token.clone(), req, next)
         }))
@@ -141,28 +141,42 @@ fn query_param<'q>(query: &'q str, key: &str) -> Option<&'q str> {
 
 // --- static assets (the same ui/ the desktop webview loads) ---
 
-async fn asset_handler(uri: axum::http::Uri) -> Response {
+async fn asset_handler(uri: Uri, headers: HeaderMap) -> Response {
     let path = uri.path().trim_start_matches('/');
     let path = if path.is_empty() { "index.html" } else { path };
-    match UiAssets::get(path) {
-        Some(file) => {
-            let mime = mime_guess::from_path(path).first_or_octet_stream();
-            (
-                [
-                    (axum::http::header::CONTENT_TYPE, mime.as_ref().to_string()),
-                    // No ETag/Last-Modified is set below, so with no explicit
-                    // directive here a browser's own heuristic caching (mobile
-                    // Safari/Chrome in particular) can go on serving a stale
-                    // app.js indefinitely across page loads, with no way to
-                    // tell it just happened — a real, previously-hit bug.
-                    (axum::http::header::CACHE_CONTROL, "no-store".to_string()),
-                ],
-                file.data.into_owned(),
-            )
-                .into_response()
-        }
-        None => (StatusCode::NOT_FOUND, "not found").into_response(),
+    let Some(file) = UiAssets::get(path) else {
+        return (StatusCode::NOT_FOUND, "not found").into_response();
+    };
+    let etag = asset_etag(&file.metadata.sha256_hash());
+    // no-cache, not no-store: the browser must revalidate on every load, so a
+    // stale app.js can't linger (mobile heuristic caching did that before), but
+    // an unchanged file costs a 304 instead of a full download on a slow link.
+    let cache = [
+        (header::ETAG, etag.clone()),
+        (header::CACHE_CONTROL, "no-cache".to_string()),
+    ];
+    if etag_matches(&headers, &etag) {
+        return (StatusCode::NOT_MODIFIED, cache).into_response();
     }
+    let mime = mime_guess::from_path(path).first_or_octet_stream();
+    (
+        [(header::CONTENT_TYPE, mime.as_ref().to_string())],
+        cache,
+        file.data.into_owned(),
+    )
+        .into_response()
+}
+
+fn asset_etag(hash: &[u8; 32]) -> String {
+    let hex: String = hash[..16].iter().map(|b| format!("{b:02x}")).collect();
+    format!("\"{hex}\"")
+}
+
+fn etag_matches(headers: &HeaderMap, etag: &str) -> bool {
+    headers
+        .get(header::IF_NONE_MATCH)
+        .and_then(|v| v.to_str().ok())
+        .is_some_and(|v| v.split(',').any(|t| t.trim() == etag || t.trim() == "*"))
 }
 
 // --- file uploads: browser paste / drop / picker -> a path claude can read ---
@@ -569,10 +583,12 @@ async fn bridge(socket: WebSocket, app: AppHandle, client_id: Option<String>) {
                 }
             }
             incoming = receiver.next() => {
-                // Commands go over /api/invoke; this socket is server->client
-                // only. Any message (including a plain ping) just proves the
-                // connection is alive; a close or error ends the bridge.
+                // Commands go over /api/invoke, except terminal input: one
+                // ordered socket instead of an HTTP request per keystroke.
+                // Anything else (a plain ping) just proves the connection is
+                // alive; a close or error ends the bridge.
                 match incoming {
+                    Some(Ok(Message::Text(text))) => write_input(&app, &text),
                     Some(Ok(_)) => {}
                     _ => break,
                 }
@@ -585,6 +601,19 @@ async fn bridge(socket: WebSocket, app: AppHandle, client_id: Option<String>) {
     }
     if let Some(client_id) = client_id {
         pty::client_disconnected(app.state::<PtyState>(), &client_id);
+    }
+}
+
+/// `{"input": {"id": ..., "data": ...}}` from the remote terminal.
+fn write_input(app: &AppHandle, text: &str) {
+    let Ok(msg) = serde_json::from_str::<Value>(text) else {
+        return;
+    };
+    let Some(input) = msg.get("input") else {
+        return;
+    };
+    if let (Some(id), Some(data)) = (opt_str(input, "id"), opt_str(input, "data")) {
+        let _ = pty::write_pty(app.state::<PtyState>(), id, data);
     }
 }
 
@@ -712,5 +741,64 @@ mod tests {
         assert!(empty.starts_with("HTTP/1.1 400"), "{empty}");
         assert!(big.starts_with("HTTP/1.1 413"), "{big}");
         let _ = std::fs::remove_dir_all(&cache);
+    }
+
+    fn get_asset(port: u16, extra_headers: &str) -> Vec<u8> {
+        let mut c = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        write!(
+            c,
+            "GET /app.js HTTP/1.1\r\nHost: x\r\n{extra_headers}Connection: close\r\n\r\n"
+        )
+        .unwrap();
+        let mut out = Vec::new();
+        c.read_to_end(&mut out).unwrap();
+        out
+    }
+
+    #[test]
+    fn etag_matching() {
+        let etag = asset_etag(&[0xab; 32]);
+        assert_eq!(etag, format!("\"{}\"", "ab".repeat(16)));
+        let with = |v: &str| {
+            let mut h = HeaderMap::new();
+            h.insert(header::IF_NONE_MATCH, v.parse().unwrap());
+            h
+        };
+        assert!(etag_matches(&with(&etag), &etag));
+        assert!(etag_matches(&with(&format!("\"x\", {etag}")), &etag));
+        assert!(etag_matches(&with("*"), &etag));
+        assert!(!etag_matches(&with("\"other\""), &etag));
+        assert!(!etag_matches(&HeaderMap::new(), &etag));
+    }
+
+    #[tokio::test]
+    async fn assets_compress_and_revalidate() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let router = Router::new()
+            .fallback(get(asset_handler).layer(tower_http::compression::CompressionLayer::new()));
+        tokio::spawn(async move { axum::serve(listener, router).await.unwrap() });
+
+        let (plain, gzip, cached) = tokio::task::spawn_blocking(move || {
+            let plain = String::from_utf8_lossy(&get_asset(port, "")).into_owned();
+            let etag = plain
+                .lines()
+                .find_map(|l| l.strip_prefix("etag: "))
+                .unwrap()
+                .to_string();
+            let gzip = get_asset(port, "Accept-Encoding: gzip\r\n");
+            let cached = get_asset(port, &format!("If-None-Match: {etag}\r\n"));
+            (plain, gzip, String::from_utf8_lossy(&cached).into_owned())
+        })
+        .await
+        .unwrap();
+
+        assert!(plain.starts_with("HTTP/1.1 200"), "{plain}");
+        assert!(plain.contains("cache-control: no-cache"), "{plain}");
+        let full = UiAssets::get("app.js").unwrap().data.len();
+        let gz_head = String::from_utf8_lossy(&gzip[..gzip.len().min(400)]).into_owned();
+        assert!(gz_head.contains("content-encoding: gzip"), "{gz_head}");
+        assert!(gzip.len() < full / 2, "gzip {} vs {full}", gzip.len());
+        assert!(cached.starts_with("HTTP/1.1 304"), "{cached}");
     }
 }

@@ -76,6 +76,12 @@ if (!IS_REMOTE) {
   };
 
   invoke = async (command, args = {}) => {
+    // Terminal input rides the open socket: in order, and without an HTTP
+    // round trip per keystroke on a slow link.
+    if (command === "write_pty" && ws?.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify({ input: { id: args.id, data: args.data } }));
+      return;
+    }
     const res = await fetch(withToken(`/api/invoke/${command}`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
