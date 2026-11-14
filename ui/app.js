@@ -4076,7 +4076,18 @@ if (!POPOUT) {
   listen("store-update", ({ payload }) => {
     if ((payload.profileId || null) !== (PROFILE_ID || null)) return;
     const data = payload.value || {};
-    if (Array.isArray(data.groups)) groups = data.groups;
+    // Update existing group objects in place: an open edit (rename, menu) holds
+    // a reference to its group, and this client's own save echoes back here, so
+    // swapping in fresh objects would drop that edit onto a detached copy.
+    if (Array.isArray(data.groups)) {
+      const byId = new Map(groups.map((g) => [g.id, g]));
+      groups = data.groups.map((next) => {
+        const g = byId.get(next.id);
+        if (!g) return next;
+        for (const k of Object.keys(g)) if (!(k in next)) delete g[k];
+        return Object.assign(g, next);
+      });
+    }
     if (Array.isArray(data.recentDirs)) recentDirs = data.recentDirs;
     if (data.settings && typeof data.settings === "object") {
       // Every persist() (including this client's own — the emit isn't
