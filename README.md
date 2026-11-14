@@ -73,7 +73,7 @@ conversation — it hosts the genuine `claude` process and stays out of the way.
 Grab a build from the [latest release](https://github.com/otezz/mandor/releases/latest)
 (or build it yourself, below).
 
-**Linux** (x86_64):
+**Linux** (x86_64 and arm64; on arm64 the files say `arm64` / `aarch64` in place of `amd64` / `x86_64`):
 
 ```bash
 sudo dpkg -i Mandor_*_amd64.deb           # Debian / Ubuntu
