@@ -2636,6 +2636,7 @@ dependencies = [
  "base64 0.22.1",
  "fontdb",
  "futures-util",
+ "getrandom 0.3.4",
  "glib",
  "http",
  "hyper",

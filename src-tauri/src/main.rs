@@ -3,6 +3,7 @@
 
 #[cfg(target_os = "linux")]
 mod appicon;
+mod mcp;
 mod pty;
 mod push;
 mod sessions;
@@ -37,7 +38,7 @@ fn save_window_geometry(app: &tauri::AppHandle) {
         }
     }
 }
-use sessions::{list_sessions, session_cwd, session_pr};
+use sessions::{list_sessions, session_cwd, session_pr, session_tail};
 
 /// Cache file for the resolved login-shell PATH (see `ensure_tools_on_path`), under
 /// the platform cache dir — mirrors `incognito_base`.
@@ -925,6 +926,7 @@ fn main() {
                 .build(),
         )
         .manage(PtyState::default())
+        .manage(mcp::McpState::default())
         .manage(webeditor::WebEditor::default())
         .manage(store::StoreState::default())
         .manage(AppStartup {
@@ -941,6 +943,7 @@ fn main() {
             // webserver.rs. Read once at launch; toggling the setting takes
             // effect on the next restart.
             webserver::spawn(app.handle().clone(), store::get_remote_config());
+            mcp::spawn(app.handle().clone());
             // show_notification uses notify_rust directly, so register the sender
             // app as tauri-plugin-notification does; otherwise the first
             // notification looks up an app named "use_default" and macOS asks
@@ -1068,6 +1071,7 @@ fn main() {
             read_audio_data,
             session_pr,
             session_cwd,
+            session_tail,
             open_session_window,
             open_profile_window,
             show_main_window,
@@ -1089,7 +1093,8 @@ fn main() {
             push::push_subscribe,
             push::push_unsubscribe,
             push::push_notify,
-            webserver::browse_dir
+            webserver::browse_dir,
+            mcp::mcp_reply
         ])
         .build(tauri::generate_context!())
         .expect("error while building Mandor")

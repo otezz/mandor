@@ -1822,6 +1822,21 @@ body.engine-ghostty .xterm-only {
   cursor: pointer;
 }
 
+.approve-text {
+  margin: 0;
+  padding: 14px 14px 8px;
+  font-size: 12px;
+  color: var(--fg-dim);
+}
+.approve-list {
+  margin: 0 14px 12px;
+  padding-left: 18px;
+  max-height: 240px;
+  overflow-y: auto;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+
 .modal-actions {
   display: flex;
   justify-content: flex-end;

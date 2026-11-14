@@ -2985,6 +2985,7 @@ async function spawnSession(s) {
     incognito: !!s.incognito,
     profileId: PROFILE_ID, // this window's profile (null = default ~/.claude)
     yolo: !!s.wantYolo, // skip permission prompts (fresh or resumed)
+    prompt: null,
   };
   if (s.spawnMode === "new") {
     args.sessionId = s.id;
@@ -2992,6 +2993,8 @@ async function spawnSession(s) {
     args.worktree = s.wantWorktree;
     args.model = s.wantModel || null;
     args.remoteControl = !!s.wantRemote; // only a fresh session can register remote control
+    args.prompt = s.wantPrompt || null; // first message, from create_session
+    s.wantPrompt = null;
     s.warmUntil = 0; // a fresh session's first turn is real — ring for it
   } else {
     args.resume = s.id;
@@ -3739,6 +3742,318 @@ listen("pty-exit", ({ payload }) => {
   renderSessionList();
   if (s.term) s.term.write("\r\n\x1b[90m[claude exited]\x1b[0m\r\n");
 });
+
+// --- session tools (mcp.rs) ---
+// Every claude Mandor spawns can create, message and list sessions through
+// Mandor's MCP server. The backend forwards each call here, to the window that
+// owns the calling session, because this window owns the session list.
+const MAX_CREATED_LIVE = 10;
+const RESUME_QUIET_MS = 1500;
+const RESUME_SETTLE_MAX_MS = 15000;
+
+function sessionStatus(s) {
+  if (s.live)
+    return s.attention ? "needs-attention" : s.working ? "working" : "idle";
+  if (s.suspended) return "suspended";
+  return s.exited ? "exited" : "not-running";
+}
+
+// The last `count` lines of a terminal's scrollback that end in content, as
+// plain text; null if the engine has no buffer API.
+function screenText(term, count) {
+  try {
+    const buf = term.buffer.active;
+    const line = (i) => buf.getLine(i)?.translateToString(true) ?? "";
+    let end = buf.length;
+    while (end > 0 && !line(end - 1).trim()) end--;
+    const out = [];
+    for (let i = Math.max(0, end - count); i < end; i++) out.push(line(i));
+    return out.join("\n");
+  } catch {
+    return null;
+  }
+}
+
+function findGroup(ref) {
+  const r = String(ref).trim().toLowerCase();
+  return groups.find((g) => g.id === ref || g.name.toLowerCase() === r);
+}
+
+function findSessionRef(ref) {
+  if (sessions.has(ref)) return sessions.get(ref);
+  const named = [...sessions.values()].filter((s) => s.name === ref);
+  if (named.length > 1)
+    throw new Error(`several sessions are named "${ref}"; use its id`);
+  if (!named.length) throw new Error(`no session "${ref}" (see list_sessions)`);
+  return named[0];
+}
+
+// Asks the user in Mandor itself to approve a session tool's action, whatever
+// the calling claude's own permission settings allow. One dialog at a time.
+const APPROVAL_TIMEOUT_MS = 270000; // under mcp.rs APPROVAL_TIMEOUT
+let approvalChain = Promise.resolve();
+function askApproval({ title, text, items, okLabel, denyLabel }) {
+  const modal = document.getElementById("approve-modal");
+  const okBtn = document.getElementById("approve-ok");
+  const denyBtn = document.getElementById("approve-deny");
+  const run = () =>
+    new Promise((resolve) => {
+      document.getElementById("approve-title").textContent = title;
+      document.getElementById("approve-text").textContent = text;
+      document
+        .getElementById("approve-list")
+        .replaceChildren(
+          ...items.map((item) =>
+            Object.assign(document.createElement("li"), { textContent: item }),
+          ),
+        );
+      okBtn.textContent = okLabel;
+      denyBtn.textContent = denyLabel;
+      const done = (approved) => {
+        clearTimeout(timer);
+        modal.hidden = true;
+        okBtn.onclick = denyBtn.onclick = modal.onkeydown = null;
+        resolve(approved);
+      };
+      const timer = setTimeout(() => done(false), APPROVAL_TIMEOUT_MS);
+      okBtn.onclick = () => done(true);
+      denyBtn.onclick = () => done(false);
+      modal.onkeydown = (e) => {
+        if (e.key === "Escape") done(false);
+      };
+      modal.hidden = false;
+      denyBtn.focus(); // a stray Enter keeps the sessions
+      if (notificationsEnabled && !appInForeground())
+        invoke("notify", {
+          title: "Mandor needs your approval",
+          body: title,
+        }).catch(() => {});
+    });
+  const asked = approvalChain.then(run);
+  approvalChain = asked.catch(() => {});
+  return asked;
+}
+
+const sessionTools = {
+  async create_session(caller, a) {
+    const parent = sessions.get(caller);
+    const name = String(a.name || "").trim();
+    const prompt = String(a.prompt || "").trim();
+    if (!name || !prompt) throw new Error("name and prompt are required");
+    const g = a.group ? findGroup(a.group) : null;
+    if (a.group && !g)
+      throw new Error(
+        `no group "${a.group}"; groups: ${groups.map((x) => x.name).join(", ") || "none"}`,
+      );
+    const cwd = String(a.cwd || g?.dir || "").trim();
+    if (!cwd)
+      throw new Error(
+        g
+          ? `group "${g.name}" has no folder; pass cwd`
+          : "pass a group or a cwd",
+      );
+    const created = [...sessions.values()].filter(
+      (s) => s.createdBy && s.live,
+    ).length;
+    if (created >= MAX_CREATED_LIVE)
+      throw new Error(
+        `${created} created sessions are already running; close some first`,
+      );
+    const prefix = g?.namePrefix || "";
+    const fullName = name.startsWith(prefix) ? name : prefix + name;
+    const worktree = a.worktree ?? !!g?.worktree;
+    const from = parent ? `"${parent.name}" (id ${parent.id})` : `id ${caller}`;
+    const s = addSession({
+      id: newId(),
+      cwd,
+      name: fullName,
+      groupId: g ? g.id : autoGroupFor(cwd),
+      spawnMode: "new",
+      wantWorktree: worktree,
+      wantModel: a.model || g?.model || "",
+      wantRemote: settings.remoteByDefault,
+      wantYolo: !!parent?.wantYolo,
+      live: false,
+    });
+    s.createdBy = caller;
+    const header =
+      `[Mandor: this session was created by session ${from}. To report back ` +
+      `or ask it something, use the mandor send_message tool with session ` +
+      `"${caller}".]`;
+    // claude only runs a slash command that starts the message.
+    s.wantPrompt = prompt.trimStart().startsWith("/")
+      ? `${prompt.trimStart()}\n\n${header}`
+      : `${header}\n\n${prompt}`;
+    addRecentDir(cwd);
+    renderSessionList();
+    persist();
+    attachTerminal(s);
+    await spawnSession(s);
+    if (s.exited) throw new Error(`claude failed to start in ${cwd}`);
+    const where = g ? `group "${g.name}"` : "no group";
+    return (
+      `Created session "${s.name}" (id ${s.id}) in ${where}, folder ${cwd}` +
+      `${worktree ? ", in a new git worktree" : ""}. Your prompt is its first ` +
+      `message, and it knows to report back to you with send_message.`
+    );
+  },
+
+  async close_session(caller, a) {
+    const refs = Array.isArray(a.sessions) ? a.sessions.map(String) : [];
+    if (!refs.length) throw new Error("sessions is empty");
+    if (refs.length > 20) throw new Error("at most 20 sessions at a time");
+    const targets = [...new Set(refs.map(findSessionRef))];
+    if (targets.some((t) => t.id === caller))
+      throw new Error("that includes your own session");
+    const running = targets.filter((t) => t.live);
+    if (running.length)
+      throw new Error(
+        `still running: ${running.map((t) => `"${t.name}"`).join(", ")}; only ` +
+          `sessions that aren't running can be closed`,
+      );
+    const from = sessions.get(caller)?.name ?? caller;
+    const approved = await askApproval({
+      title:
+        targets.length > 1
+          ? `Close ${targets.length} sessions?`
+          : `Close "${targets[0].name}"?`,
+      text:
+        `Session "${from}" wants to remove these from the sidebar. Their ` +
+        `conversations stay on disk and can be reopened from Resume.`,
+      items: targets.map((t) =>
+        `${t.name} (${sessionStatus(t)}) ${t.cwd || ""}`.trim(),
+      ),
+      okLabel: "Close",
+      denyLabel: "Keep",
+    });
+    if (!approved)
+      throw new Error("the user declined or didn't answer; nothing was closed");
+    // Re-checked: one may have been closed or started while the user decided.
+    const closable = targets.filter((t) => sessions.get(t.id) === t && !t.live);
+    for (const t of closable) await closeSession(t.id);
+    const skipped = targets.filter((t) => !closable.includes(t));
+    return (
+      `Closed ${closable.map((t) => `"${t.name}"`).join(", ") || "nothing"}.` +
+      (skipped.length
+        ? ` Skipped ${skipped.map((t) => `"${t.name}"`).join(", ")}: closed or started meanwhile.`
+        : "")
+    );
+  },
+
+  async send_message(caller, a) {
+    const target = findSessionRef(String(a.session || ""));
+    const message = String(a.message || "").trim();
+    if (!message) throw new Error("message is empty");
+    if (target.id === caller) throw new Error("that is your own session");
+    if (!target.live)
+      throw new Error(
+        `session "${target.name}" is ${sessionStatus(target)}; resume it first with resume_session`,
+      );
+    const status = sessionStatus(target);
+    const me = sessions.get(caller);
+    const text =
+      `[Mandor: message from session "${me?.name ?? caller}" (id ${caller}); ` +
+      `reply with send_message]\n${message}`;
+    // As a paste, so newlines don't submit early; then Enter on its own, which
+    // claude would otherwise take as part of the paste.
+    if (target.term) target.term.paste(text);
+    else await invoke("write_pty", { id: target.id, data: text });
+    await sleep(150);
+    await invoke("write_pty", { id: target.id, data: "\r" });
+    return status === "working"
+      ? `Sent to "${target.name}". It was busy, so claude queued the message.`
+      : `Sent to "${target.name}".`;
+  },
+
+  // The same as clicking a cold session in the sidebar, without focusing it.
+  // Waits for the resumed claude to finish replaying, so a message sent next
+  // lands in a ready prompt.
+  async resume_session(caller, a) {
+    const target = findSessionRef(String(a.session || ""));
+    if (target.live)
+      return `"${target.name}" is already running (${sessionStatus(target)}).`;
+    if (target.exited)
+      throw new Error(
+        `session "${target.name}" has exited; ask the user to restart it`,
+      );
+    if (target.incognito)
+      throw new Error(
+        `session "${target.name}" is incognito, so it has no history to resume`,
+      );
+    if (!target.term) attachTerminal(target);
+    await spawnSession(target);
+    if (target.exited)
+      throw new Error(`claude failed to resume "${target.name}"`);
+    renderSessionList();
+    persist();
+    const deadline = Date.now() + RESUME_SETTLE_MAX_MS;
+    do await sleep(500);
+    while (
+      Date.now() - target.lastActivityMs < RESUME_QUIET_MS &&
+      Date.now() < deadline
+    );
+    return `Resumed "${target.name}" with its history; it is ${sessionStatus(target)}.`;
+  },
+
+  async read_session(caller, a) {
+    const target = findSessionRef(String(a.session || ""));
+    const lines = Math.min(Math.max(Math.round(Number(a.lines)) || 80, 1), 400);
+    const status = sessionStatus(target);
+    const screen =
+      target.live && target.term ? screenText(target.term, lines) : null;
+    if (screen)
+      return `"${target.name}" is ${status}. Its last ${lines} terminal lines:\n\n${screen}`;
+    const tail = await invoke("session_tail", {
+      id: target.id,
+      profileId: PROFILE_ID,
+      maxChars: lines * 120,
+    });
+    return tail
+      ? `"${target.name}" is ${status}. The end of its conversation:\n\n${tail}`
+      : `"${target.name}" is ${status} and has no saved conversation to read.`;
+  },
+
+  async list_sessions(caller) {
+    const groupName = (id) => groups.find((g) => g.id === id)?.name ?? null;
+    return JSON.stringify(
+      {
+        you: caller,
+        groups: groups.map((g) => ({
+          id: g.id,
+          name: g.name,
+          folder: g.dir || null,
+        })),
+        sessions: sessionOrder
+          .map((id) => sessions.get(id))
+          .filter(Boolean)
+          .map((s) => ({
+            id: s.id,
+            name: s.name,
+            group: groupName(s.groupId),
+            folder: s.cwd,
+            status: sessionStatus(s),
+            createdBy: s.createdBy ?? null,
+          })),
+      },
+      null,
+      1,
+    );
+  },
+};
+
+if (!IS_REMOTE && !POPOUT) {
+  listen("mcp-request", async ({ payload }) => {
+    const { requestId, profileId, caller, tool, args } = payload;
+    if ((profileId ?? null) !== (PROFILE_ID ?? null)) return;
+    let result;
+    try {
+      result = { ok: await sessionTools[tool](caller, args || {}) };
+    } catch (e) {
+      result = { error: String(e?.message ?? e) };
+    }
+    invoke("mcp_reply", { requestId, result }).catch(() => {});
+  });
+}
 
 // Another client on this same profile (a remote browser, another window)
 // saved a change — pick it up here too. Skipped in POPOUT (it doesn't own a
