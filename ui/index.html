@@ -104,6 +104,36 @@
               </button>
               <div id="editor-menu" class="dropdown-menu" hidden></div>
             </div>
+            <div class="dropdown editor-split terminal-split">
+              <button
+                id="open-terminal-btn"
+                class="titlebar-util-btn"
+                type="button"
+                title="Open this session's folder in a terminal"
+                disabled
+              >
+                <svg
+                  viewBox="0 0 16 16"
+                  width="13"
+                  height="13"
+                  aria-hidden="true"
+                >
+                  <path d="M2.5 4 6 7.5 2.5 11M8 12h5.5" />
+                </svg>
+                <span class="btn-label">Open in terminal</span>
+              </button>
+              <button
+                id="terminal-pick-btn"
+                class="titlebar-util-btn editor-pick-btn"
+                type="button"
+                title="Choose terminal"
+                aria-label="Choose terminal"
+                disabled
+              >
+                ▾
+              </button>
+              <div id="terminal-menu" class="dropdown-menu" hidden></div>
+            </div>
           </div>
           <div class="titlebar-controls">
             <div id="titlebar-update" class="titlebar-update" hidden>
@@ -717,6 +747,23 @@
                   type="text"
                   spellcheck="false"
                   placeholder="code"
+                />
+              </div>
+              <div class="set-row" id="set-terminal-row">
+                <span class="set-row-text">
+                  <span class="set-label">Terminal command</span>
+                  <span class="set-hint"
+                    >For “Open in terminal”; it starts in the session's folder,
+                    and <code>{path}</code> is replaced with it. Blank uses the
+                    first terminal found.</span
+                  >
+                </span>
+                <input
+                  id="set-terminal"
+                  class="ns-input set-control-text"
+                  type="text"
+                  spellcheck="false"
+                  placeholder="ghostty --working-directory={path}"
                 />
               </div>
             </section>

@@ -235,7 +235,8 @@ body.popout .titlebar-side > * {
   align-items: center;
 }
 
-body:not(.remote) #open-editor-btn {
+body:not(.remote) #open-editor-btn,
+#open-terminal-btn {
   border-radius: 6px 0 0 6px;
 }
 
@@ -2313,6 +2314,8 @@ body.remote #set-editor-row,
 body.remote [data-section="profiles"],
 body.remote #sidebar-quit,
 body.remote #editor-pick-btn,
+body.remote .terminal-split,
+body.remote #set-terminal-row,
 body.remote #sidebar-profiles,
 body.remote #set-bell-file-btn,
 body.remote [data-section="remote"] {
