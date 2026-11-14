@@ -21,7 +21,7 @@
 //! independent views of the same shared sessions.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 
 use serde::{Deserialize, Serialize};
@@ -83,19 +83,19 @@ fn load_from_disk(profile_id: &str) -> Value {
 /// localStorage's own backing store, an app crash here has no journal to recover
 /// from).
 fn save_to_disk(profile_id: &str, value: &Value) {
-    let Some(path) = store_file(profile_id) else {
-        return;
-    };
+    if let Some(path) = store_file(profile_id) {
+        let _ = save_to_disk_at(&path, value);
+    }
+}
+
+fn save_to_disk_at(path: &Path, value: &Value) -> Result<(), String> {
     if let Some(dir) = path.parent() {
-        let _ = std::fs::create_dir_all(dir);
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
     }
-    let Ok(bytes) = serde_json::to_vec_pretty(value) else {
-        return;
-    };
+    let bytes = serde_json::to_vec_pretty(value).map_err(|e| e.to_string())?;
     let tmp = path.with_extension("json.tmp");
-    if std::fs::write(&tmp, bytes).is_ok() {
-        let _ = std::fs::rename(&tmp, &path);
-    }
+    std::fs::write(&tmp, bytes).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -192,4 +192,35 @@ pub fn save_remote_config(config: RemoteConfig) -> Result<(), String> {
     }
     let bytes = serde_json::to_vec_pretty(&config).map_err(|e| e.to_string())?;
     std::fs::write(&path, bytes).map_err(|e| e.to_string())
+}
+
+/// The profile registry (`[{ id, name }]`), shared by every window and remote
+/// browser so any of them can list and switch profiles. App-wide like the
+/// remote config, so it sits in its own file next to the per-profile stores.
+/// Dev builds keep their own, matching their separate profile dirs.
+fn profiles_file() -> Option<PathBuf> {
+    let name = if cfg!(debug_assertions) {
+        "profiles-dev.json"
+    } else {
+        "profiles.json"
+    };
+    store_dir().map(|d| d.join(name))
+}
+
+#[tauri::command]
+pub fn get_profiles() -> Value {
+    profiles_file()
+        .and_then(|p| std::fs::read(p).ok())
+        .and_then(|b| serde_json::from_slice::<Value>(&b).ok())
+        .filter(Value::is_array)
+        .unwrap_or_else(|| Value::Array(Vec::new()))
+}
+
+#[tauri::command]
+pub fn save_profiles(profiles: Value) -> Result<(), String> {
+    if !profiles.is_array() {
+        return Err("profiles must be a list".into());
+    }
+    let path = profiles_file().ok_or("no data directory available")?;
+    save_to_disk_at(&path, &profiles)
 }

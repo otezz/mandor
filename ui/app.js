@@ -633,24 +633,34 @@ function parseGhosttyTheme(text) {
 const CLIENT_KEY_BASE = "mandor-term.client";
 const CLIENT_KEY = CLIENT_KEY_BASE + (PROFILE_ID ? "." + PROFILE_ID : "");
 
-// Global profile registry (shared across all windows): [{ id, name }]. Each entry
-// maps to a persistent config dir the backend owns (profiles_base/<id>).
-const PROFILES_KEY = "mandor-term.profiles";
+// Global profile registry (shared by every window and remote browser through the
+// backend): [{ id, name }]. Each entry maps to a persistent config dir the
+// backend owns (profiles_base/<id>).
 let profiles = [];
-function loadProfiles() {
+// Where the desktop webview kept the registry before the backend owned it.
+const LEGACY_PROFILES_KEY = "mandor-term.profiles";
+async function loadProfiles() {
   try {
-    const raw = JSON.parse(localStorage.getItem(PROFILES_KEY) || "[]");
-    profiles = Array.isArray(raw) ? raw : [];
-  } catch {
-    profiles = [];
+    const list = await invoke("get_profiles");
+    profiles = Array.isArray(list) ? list : [];
+  } catch (e) {
+    console.error(e);
+    return;
   }
-}
-function saveProfiles() {
+  if (IS_REMOTE) return;
   try {
-    localStorage.setItem(PROFILES_KEY, JSON.stringify(profiles));
+    const legacy = JSON.parse(localStorage.getItem(LEGACY_PROFILES_KEY));
+    if (!profiles.length && Array.isArray(legacy) && legacy.length) {
+      profiles = legacy;
+      await invoke("save_profiles", { profiles });
+    }
+    localStorage.removeItem(LEGACY_PROFILES_KEY);
   } catch (e) {
     console.error(e);
   }
+}
+function saveProfiles() {
+  invoke("save_profiles", { profiles }).catch((e) => console.error(e));
 }
 
 // Per-client fields only — see the CLIENT_KEY comment above.
@@ -820,7 +830,7 @@ async function loadStore() {
     // (covers old auto/light/dark values and deleted custom themes)
     if (!getTheme(settings.theme)) settings.theme = "frappe";
     savedSessions = Array.isArray(data.sessions) ? data.sessions : [];
-    loadProfiles();
+    await loadProfiles();
   } catch (e) {
     console.error(e);
   }
@@ -2124,12 +2134,12 @@ function openContextMenu(e, kind, id) {
       run: () => deleteGroup(id),
     });
   } else if (kind === "profiles") {
-    loadProfiles();
     items.push({
       label: "Default",
       current: !PROFILE_ID,
       run: () => {
-        if (PROFILE_ID) invoke("show_main_window").catch(() => {});
+        if (IS_REMOTE) switchRemoteProfile(null);
+        else if (PROFILE_ID) invoke("show_main_window").catch(() => {});
       },
     });
     for (const p of profiles) {
@@ -2137,19 +2147,23 @@ function openContextMenu(e, kind, id) {
         label: p.name,
         current: p.id === PROFILE_ID,
         run: () =>
-          invoke("open_profile_window", { id: p.id, name: p.name }).catch(
-            () => {},
-          ),
+          IS_REMOTE
+            ? switchRemoteProfile(p.id)
+            : invoke("open_profile_window", { id: p.id, name: p.name }).catch(
+                () => {},
+              ),
       });
     }
-    items.push({ sep: true });
-    items.push({
-      label: "Manage profiles…",
-      run: () => {
-        openSettings();
-        showSettingsSection("profiles");
-      },
-    });
+    if (!IS_REMOTE) {
+      items.push({ sep: true });
+      items.push({
+        label: "Manage profiles…",
+        run: () => {
+          openSettings();
+          showSettingsSection("profiles");
+        },
+      });
+    }
   } else if (kind === "ungrouped") {
     items.push({ label: "New session here", run: () => openNewSession(null) });
     items.push({ sep: true });
@@ -4642,11 +4656,23 @@ document
 document
   .getElementById("sidebar-new-group")
   .addEventListener("click", createGroupAndRename);
-document.getElementById("sidebar-profiles").addEventListener("click", (e) => {
-  e.stopPropagation(); // the document click handler would close the menu at once
-  const r = e.currentTarget.getBoundingClientRect();
-  openContextMenu({ clientX: r.left, clientY: r.top }, "profiles", null);
-});
+document
+  .getElementById("sidebar-profiles")
+  .addEventListener("click", async (e) => {
+    e.stopPropagation(); // the document click handler would close the menu at once
+    const r = e.currentTarget.getBoundingClientRect();
+    await loadProfiles(); // pick up profiles added or renamed in another window
+    openContextMenu({ clientX: r.left, clientY: r.top }, "profiles", null);
+  });
+
+// A browser tab has no other windows, so it switches profile in place.
+function switchRemoteProfile(id) {
+  const qs = new URLSearchParams(location.search);
+  if (id) qs.set("profile", id);
+  else qs.delete("profile");
+  const query = qs.toString();
+  location.href = location.pathname + (query ? "?" + query : "");
+}
 // Quit stays one click away without the tray: GNOME shows no tray icon unless
 // the AppIndicator extension is installed, and closing only hides to tray.
 // Always confirmed — quitting stops every running session.

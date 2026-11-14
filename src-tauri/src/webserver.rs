@@ -20,9 +20,9 @@
 //!
 //! Deliberately out of scope here (see `ui/app.js`'s `IS_REMOTE` gating): native
 //! window chrome, opening new OS windows, the native folder-picker dialog
-//! (replaced by the `browse_dir` command, a plain directory listing), the
-//! autostart toggle, and switching to a different profile's window — none of
-//! those are meaningful from a browser tab.
+//! (replaced by the `browse_dir` command, a plain directory listing) and the
+//! autostart toggle (switching profile reloads the tab on `?profile=<id>` instead
+//! of opening a window).
 
 use std::collections::HashMap;
 use std::hash::{BuildHasher, Hasher};
@@ -428,6 +428,11 @@ async fn dispatch(app: &AppHandle, command: &str, args: Value) -> Result<Value, 
                 opt_str(&args, "profileId"),
                 args.get("value").cloned().unwrap_or(Value::Null),
             );
+            Ok(Value::Null)
+        }
+        "get_profiles" => Ok(store::get_profiles()),
+        "save_profiles" => {
+            store::save_profiles(args.get("profiles").cloned().unwrap_or(Value::Null))?;
             Ok(Value::Null)
         }
         "app_info" => Ok(super::app_info()),

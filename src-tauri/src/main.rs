@@ -1089,6 +1089,8 @@ fn main() {
             store::save_store,
             store::get_remote_config,
             store::save_remote_config,
+            store::get_profiles,
+            store::save_profiles,
             push::push_public_key,
             push::push_subscribe,
             push::push_unsubscribe,
