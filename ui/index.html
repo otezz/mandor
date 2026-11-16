@@ -10,7 +10,13 @@
     <link rel="icon" type="image/png" href="favicon.png" />
     <!-- No start_url in the manifest on purpose: an installed app then opens
          the URL it was added from, keeping any ?token= the server needs. -->
-    <link rel="manifest" href="manifest.webmanifest" />
+    <!-- use-credentials: behind a login proxy (e.g. Cloudflare Access) the
+         manifest is otherwise fetched without its cookie and redirected away. -->
+    <link
+      rel="manifest"
+      href="manifest.webmanifest"
+      crossorigin="use-credentials"
+    />
     <link rel="apple-touch-icon" href="icons/apple-touch-icon.png" />
     <meta name="apple-mobile-web-app-capable" content="yes" />
     <meta name="mobile-web-app-capable" content="yes" />
