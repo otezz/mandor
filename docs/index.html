@@ -653,7 +653,7 @@
 
     <header class="hero" id="top">
       <div class="wrap">
-        <span class="eyebrow rise">Open source · Tauri + Rust · Linux</span>
+        <span class="eyebrow rise">Open source · Tauri + Rust · Linux &amp; macOS</span>
         <h1 class="rise d1">
           Every <span class="m">claude</span> session, in its own real
           terminal<span class="cursor" aria-hidden="true"></span>
@@ -668,7 +668,7 @@
           <a
             class="btn primary"
             href="https://github.com/otezz/mandor/releases/latest"
-            >Get the .deb</a
+            >Download Mandor</a
           >
           <a class="btn ghost" href="#how">See how it works</a>
         </div>
@@ -724,17 +724,17 @@
             <div class="gl">▤</div>
             <h3>Session sidebar</h3>
             <p>
-              Group sessions, drag to reorder, and read state at a glance —
-              which are working, which need you.
+              Group sessions, drag to reorder, rename with F2, and read state at
+              a glance: which are working, which need you.
             </p>
           </div>
           <div class="card">
             <div class="gl">↺</div>
             <h3>New &amp; resume</h3>
             <p>
-              Start in any directory with a recent-directory picker, or resume
-              an
-              existing session. Worktrees, model, and remote control supported.
+              Start in any directory or resume an existing session. Groups can
+              set a default folder, model and name prefix, and start every new
+              session in its own git worktree.
             </p>
           </div>
           <div class="card">
@@ -784,6 +784,41 @@
             <p>
               Search within a session, pop one into its own window, and see a
               badge when a session has an open pull request.
+            </p>
+          </div>
+          <div class="card">
+            <div class="gl">📱</div>
+            <h3>Remote access</h3>
+            <p>
+              Open Mandor in a browser on your phone or another computer, over
+              Tailscale or your network. Installs to the home screen, sends push
+              notifications, takes file uploads.
+            </p>
+          </div>
+          <div class="card">
+            <div class="gl">⇄</div>
+            <h3>Session tools</h3>
+            <p>
+              A built-in MCP server lets Claude start a session in another repo,
+              message it, read its screen, or close finished ones once you
+              approve.
+            </p>
+          </div>
+          <div class="card">
+            <div class="gl">◫</div>
+            <h3>Profiles</h3>
+            <p>
+              Separate Claude accounts or configs side by side, each with its
+              own window, sessions and config folder.
+            </p>
+          </div>
+          <div class="card">
+            <div class="gl">↗</div>
+            <h3>Open in editor or terminal</h3>
+            <p>
+              Jump from a session to its folder in your editor or terminal,
+              picked from the apps you have installed, or VS Code in the browser
+              when remote.
             </p>
           </div>
         </div>
@@ -840,10 +875,11 @@
             the CLI runs in a terminal first.
           </p>
           <p>
-            <b>Tested on Ubuntu only.</b> I use Mandor daily on Ubuntu 26.04; the
-            macOS and Windows builds compile and install, but I don't run them day
-            to day. The macOS <code>.dmg</code> and Windows installer are also
-            unsigned, so both will warn on first launch.
+            <b>Used daily on Fedora Linux and macOS.</b> The Windows build
+            compiles and installs, but I don't run Windows, so treat it as
+            untested. The macOS <code>.dmg</code> and Windows installer are not
+            signed with a developer certificate, so both need an extra step on
+            first launch.
           </p>
         </div>
         <div class="install">
@@ -864,13 +900,16 @@ chmod +x Mandor_*.AppImage &amp;&amp; ./Mandor_*.AppImage</pre>
           <div class="code">
             <div class="head">
               <span>macOS (unsigned)</span>
-              <button class="copy" data-copy="xattr -cr /Applications/Mandor.app">
+              <button
+                class="copy"
+                data-copy="xattr -dr com.apple.quarantine /Applications/Mandor.app"
+              >
                 copy
               </button>
             </div>
-            <pre><span class="c"># open the .dmg, drag to Applications, then on</span>
-<span class="c"># first launch right-click the app → Open, or:</span>
-xattr -cr /Applications/Mandor.app</pre>
+            <pre><span class="c"># open the .dmg, drag to Applications, then clear</span>
+<span class="c"># the quarantine flag (again after each new build):</span>
+xattr -dr com.apple.quarantine /Applications/Mandor.app</pre>
           </div>
           <div class="code">
             <div class="head">
@@ -945,8 +984,14 @@ bun run tauri build
           </div>
           <div class="credit">
             <div class="ck">Terminal</div>
-            <h3><a href="https://xtermjs.org/">xterm.js</a></h3>
-            <p>Renders every live PTY session inside the app.</p>
+            <h3>
+              <a href="https://xtermjs.org/">xterm.js</a> ·
+              <a href="https://github.com/coder/ghostty-web">ghostty-web</a>
+            </h3>
+            <p>
+              Render every live PTY session; ghostty-web powers the optional
+              Ghostty engine. <span class="lic">MIT.</span>
+            </p>
           </div>
           <div class="credit">
             <div class="ck">Typeface</div>

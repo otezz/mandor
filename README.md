@@ -20,10 +20,9 @@ reimplemented: native permission prompts, slash commands, `/resume`, output
 styling, and `--remote-control` all just work. Mandor adds the part the terminal
 doesn't give you — a proper home for many sessions at once.
 
-> **Status:** early, but a daily driver. I've used Mandor every day for about a
-> month on **Ubuntu 26.04** — that's the only platform I actually run it on.
-> macOS and Windows builds exist and install, but I've never used them day to
-> day; treat them as untested.
+> **Status:** a daily driver. I've used Mandor every day since July 2026, on
+> **Fedora Linux** and **macOS**. Windows builds compile and install, but I don't
+> run Windows; treat that build as untested.
 
 ## Why Mandor
 
@@ -44,27 +43,45 @@ conversation — it hosts the genuine `claude` process and stays out of the way.
 
 ## Features
 
-- **Session sidebar** — organize sessions into groups, drag to reorder, and see
-  at a glance which are working and which need your attention.
-- **New & resume** — start a session in any directory (with a recent-directory
-  picker), or resume an existing one; supports `-w` worktrees, `--model`, and
-  `--remote-control`.
-- **Incognito sessions** — run against a throwaway config directory so nothing is
+- **Session sidebar**: organize sessions into groups, drag to reorder, rename
+  with F2, and see at a glance which are working and which need your attention.
+- **New & resume**: start a session in any directory (with a recent-directory
+  picker), or resume an existing one; supports worktrees, `--model`, YOLO mode
+  (skip permission prompts) and `--remote-control`.
+- **Group defaults**: a group can set the folder, model and name prefix for its
+  new sessions, and start each one in its own git worktree.
+- **Remote access**: open Mandor in a browser on your phone or another computer,
+  over Tailscale, an SSH tunnel or your local network, with an optional access
+  token. The phone layout has a key bar and a sidebar drawer, installs to the
+  home screen and sends push notifications (over HTTPS). Upload files by paste,
+  drag-drop or a picker, and open a session's folder in VS Code in the browser.
+- **Session tools**: every session gets a small MCP server (the protocol Claude
+  uses to call outside tools), so Claude can start a session in another group,
+  message it, read its screen, resume it, list sessions, or close finished ones
+  once you approve.
+- **Profiles**: run separate Claude accounts or configs side by side, each with
+  its own window, sessions and config folder; switch between them from a remote
+  browser too.
+- **Open in editor or terminal**: open a session's folder in the editor or
+  terminal of your choice, picked from the installed apps.
+- **Incognito sessions**: run against a throwaway config directory so nothing is
   written to your `~/.claude` history.
-- **Themes & fonts** — Catppuccin flavors, a Ghostty-style dark theme, or paste
+- **Themes & fonts**: Catppuccin flavors, a Ghostty-style dark theme, or paste
   your own palette; pick any installed monospace family, set a point size, and
-  toggle ligatures.
-- **Attention & notifications** — a titlebar bell and desktop notifications tell
+  toggle ligatures. An experimental Ghostty terminal engine is available too.
+- **Attention & notifications**: a titlebar bell and desktop notifications tell
   you when a session finishes or needs input; an audible bell is included.
-- **Split view** — tile up to four sessions in one window to watch related work
+- **Split view**: tile up to four sessions in one window to watch related work
   (a backend and a frontend session on the same ticket) side by side.
-- **Suspend idle sessions** — stop a session's `claude` to reclaim its memory
-  while keeping it resumable, manually or automatically after N idle hours; pin
-  the ones that must keep running.
-- **Filter the sidebar** — narrow a long list to just what's running or what
+- **Suspend idle sessions**: stop a session's `claude` to reclaim its memory
+  while keeping it resumable, with one click or automatically after N idle
+  hours; pin the ones that must keep running.
+- **Filter the sidebar**: narrow a long list to just what's running or what
   needs you.
 - **Find-in-session** and **pop-out windows** for focused work.
-- **PR awareness** — a session shows a badge when it has an associated pull
+- **Copy anywhere**: terminal copy (including OSC 52 from programs inside the
+  session) reaches the clipboard of the device you're viewing from.
+- **PR awareness**: a session shows a badge when it has an associated pull
   request.
 - **Restart-to-update** prompt when a new build is installed.
 
@@ -136,7 +153,9 @@ notes.
 ## Tech
 
 Tauri v2 (Rust) · `portable-pty` for PTYs · vanilla JS/CSS frontend ·
-[`xterm.js`](https://xtermjs.org/) for terminal rendering (vendored).
+[`xterm.js`](https://xtermjs.org/) for terminal rendering (vendored), with
+[`ghostty-web`](https://github.com/coder/ghostty-web) as an optional engine ·
+`axum` for the remote server and the session tools' MCP server.
 
 ## Credits
 
