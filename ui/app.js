@@ -4686,7 +4686,7 @@ document.getElementById("sidebar-quit").addEventListener("click", () => {
   document.getElementById("quit-msg").textContent = live.length
     ? `${live.length} running session${live.length === 1 ? "" : "s"}${
         working ? ` (${working} still working)` : ""
-      } will stop. You can resume them after reopening Mandor.`
+      } will stop. You can resume them once Mandor is back.`
     : "No sessions are running.";
   quitModal.hidden = false;
   document.getElementById("quit-confirm").focus();
@@ -4700,6 +4700,10 @@ document
 document
   .getElementById("quit-confirm")
   .addEventListener("click", () => invoke("quit_app"));
+document.getElementById("quit-restart").addEventListener("click", () => {
+  closeQuitModal();
+  invoke("restart_app").catch(() => {});
+});
 if (IS_REMOTE)
   document.getElementById("open-editor-btn").title =
     "Open this session's folder in VS Code in a new tab";
