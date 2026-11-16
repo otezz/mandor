@@ -4731,6 +4731,7 @@ const RESTORE_ICON =
 const winMax = document.getElementById("win-max");
 
 async function syncMaxIcon() {
+  if (IS_REMOTE) return; // no OS window to maximize; the server has no is_maximized
   const max = await invoke("is_maximized").catch(() => false);
   winMax.innerHTML = max ? RESTORE_ICON : MAX_ICON;
   winMax.title = max ? "Restore" : "Maximize";
