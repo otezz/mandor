@@ -1,7 +1,7 @@
 name: Release
 
 # Build the desktop bundles and attach them to the release for a pushed v* tag:
-#   Linux   → .deb, .rpm, AppImage
+#   Linux   → .deb, .rpm, AppImage, for x86_64 and arm64
 #   macOS   → universal .dmg (Apple Silicon + Intel), unsigned
 #   Windows → NSIS .exe installer, unsigned (experimental — untested platform)
 # Also runnable manually (workflow_dispatch) to produce a test build whose
@@ -18,8 +18,18 @@ permissions:
 jobs:
   linux:
     # 22.04 links against an older glibc than the dev machine, so the bundles run
-    # on a wider range of end-user distros.
-    runs-on: ubuntu-22.04
+    # on a wider range of end-user distros. arm64 builds natively on GitHub's arm
+    # runner rather than cross-compiling WebKitGTK.
+    strategy:
+      # One arch failing must not cancel the other's upload.
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            runner: ubuntu-22.04
+          - arch: arm64
+            runner: ubuntu-22.04-arm
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v5
 
@@ -69,7 +79,7 @@ jobs:
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v7
         with:
-          name: mandor-linux-bundles
+          name: mandor-linux-${{ matrix.arch }}-bundles
           path: |
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/rpm/*.rpm
