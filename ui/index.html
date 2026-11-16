@@ -318,8 +318,8 @@
               id="sidebar-quit"
               class="sidebar-footer-btn sidebar-quit"
               type="button"
-              title="Quit Mandor"
-              aria-label="Quit Mandor"
+              title="Quit or restart Mandor"
+              aria-label="Quit or restart Mandor"
             >
               <svg
                 viewBox="0 0 16 16"
@@ -658,13 +658,16 @@
     <div id="quit-modal" class="modal modal-center" hidden>
       <div class="modal-backdrop" id="quit-backdrop"></div>
       <div class="modal-box modal-form">
-        <div class="modal-header"><span>Quit Mandor?</span></div>
+        <div class="modal-header"><span>Quit or restart Mandor?</span></div>
         <div class="ns-fields">
           <p id="quit-msg" class="close-msg">—</p>
         </div>
         <div class="modal-actions">
           <button id="quit-cancel" class="btn-secondary" type="button">
             Cancel
+          </button>
+          <button id="quit-restart" class="btn-secondary" type="button">
+            Restart
           </button>
           <button id="quit-confirm" class="btn-primary" type="button">
             Quit
