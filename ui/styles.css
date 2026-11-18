@@ -1822,6 +1822,15 @@ body.engine-ghostty .xterm-only {
   cursor: pointer;
 }
 
+.field-check[hidden] {
+  display: none;
+}
+
+.field-check:has(input:disabled) {
+  cursor: default;
+  opacity: 0.7;
+}
+
 .approve-text {
   margin: 0;
   padding: 14px 14px 8px;

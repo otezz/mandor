@@ -5172,28 +5172,53 @@ invoke("is_dev").then((dev) => {
 // --- close-session confirmation ---
 const closeModal = document.getElementById("close-modal");
 const closeMsg = document.getElementById("close-msg");
+const closeWorktree = document.getElementById("close-worktree");
+const closeWorktreeBox = document.getElementById("close-worktree-box");
+const closeWorktreeText = document.getElementById("close-worktree-text");
 let pendingCloseId = null;
+let pendingCloseWorktree = null;
+let closeRequestSeq = 0;
 
-function requestClose(id) {
+async function requestClose(id) {
   const s = sessions.get(id);
   if (!s) return;
-  if (!s.live) {
-    closeSession(id); // nothing running — no need to confirm
+  const seq = ++closeRequestSeq;
+  const wt = await invoke("session_worktree", {
+    id,
+    profileId: PROFILE_ID,
+  }).catch(() => null);
+  if (seq !== closeRequestSeq || sessions.get(id) !== s) return;
+  if (!s.live && !wt) {
+    closeSession(id); // nothing running and nothing to offer: no need to confirm
     return;
   }
   pendingCloseId = id;
-  if (s.incognito) {
+  pendingCloseWorktree = wt;
+  closeWorktree.hidden = !wt;
+  if (wt) {
+    // Unticked by default; git refuses to remove a worktree with changes.
+    closeWorktreeBox.checked = false;
+    closeWorktreeBox.disabled = wt.dirty;
+    closeWorktreeText.textContent = wt.dirty
+      ? `Can't remove its worktree: ${wt.path} has uncommitted changes.`
+      : `Also remove its worktree, ${wt.path}` +
+        (wt.branch ? ` (branch ${wt.branch} is kept)` : "");
+  }
+  if (!s.live) {
+    closeMsg.textContent = `“${s.name}” isn’t running.`;
+  } else if (s.incognito) {
     closeMsg.textContent = `“${s.name}” is an incognito session. Closing it stops claude and permanently discards the conversation — it isn’t saved anywhere and can’t be resumed.`;
   } else {
     closeMsg.textContent = `“${s.name}” — its claude process will be stopped.`;
   }
-  closeMsg.classList.toggle("close-warn", !!s.incognito);
+  closeMsg.classList.toggle("close-warn", s.live && !!s.incognito);
   closeModal.hidden = false;
 }
 
 function closeCloseModal() {
   closeModal.hidden = true;
   pendingCloseId = null;
+  pendingCloseWorktree = null;
 }
 
 // Confirm before resuming a suspended session — resuming re-spawns claude (the
@@ -5237,10 +5262,16 @@ document
 document
   .getElementById("close-backdrop")
   .addEventListener("click", closeCloseModal);
-document.getElementById("close-confirm").addEventListener("click", () => {
+document.getElementById("close-confirm").addEventListener("click", async () => {
   const id = pendingCloseId;
+  const wt = closeWorktreeBox.checked ? pendingCloseWorktree : null;
   closeCloseModal();
-  if (id) closeSession(id);
+  if (!id) return;
+  await closeSession(id);
+  if (wt)
+    invoke("remove_worktree", { path: wt.path })
+      .then(() => showToast(`Removed worktree ${wt.path}`))
+      .catch((e) => showToast(`Worktree not removed: ${e.message || e}`, true));
 });
 
 // --- sidebar collapse ---

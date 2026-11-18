@@ -10,6 +10,7 @@ mod sessions;
 mod store;
 mod webeditor;
 mod webserver;
+mod worktree;
 
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1080,6 +1081,8 @@ fn main() {
             read_audio_data,
             session_pr,
             session_cwd,
+            worktree::session_worktree,
+            worktree::remove_worktree,
             session_tail,
             open_session_window,
             open_profile_window,

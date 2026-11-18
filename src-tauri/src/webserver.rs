@@ -433,6 +433,14 @@ async fn dispatch(app: &AppHandle, command: &str, args: Value) -> Result<Value, 
             )
             .await?,
         ),
+        "session_worktree" => to_value(
+            crate::worktree::session_worktree(req_str(&args, "id")?, opt_str(&args, "profileId"))
+                .await?,
+        ),
+        "remove_worktree" => {
+            crate::worktree::remove_worktree(req_str(&args, "path")?).await?;
+            Ok(Value::Null)
+        }
         "browse_dir" => Ok(browse_dir(opt_str(&args, "path"))),
         "get_store" => Ok(store::get_store(store_state, opt_str(&args, "profileId"))),
         "save_store" => {
