@@ -158,13 +158,16 @@ pub async fn session_pr(
 /// `-w` session's lives under its worktree's path, not the folder it started in.
 #[tauri::command]
 pub async fn session_cwd(id: String, profile_id: Option<String>) -> Result<Option<String>, String> {
-    tauri::async_runtime::spawn_blocking(move || {
-        find_transcript(&id, profile_id.as_deref())
-            .as_deref()
-            .and_then(last_cwd)
-    })
-    .await
-    .map_err(|e| e.to_string())
+    tauri::async_runtime::spawn_blocking(move || last_session_cwd(&id, profile_id.as_deref()))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Blocking body of `session_cwd`.
+pub fn last_session_cwd(id: &str, profile_id: Option<&str>) -> Option<String> {
+    find_transcript(id, profile_id)
+        .as_deref()
+        .and_then(last_cwd)
 }
 
 fn find_transcript(id: &str, profile_id: Option<&str>) -> Option<PathBuf> {
