@@ -46,6 +46,7 @@ self-contained, because the new session starts with no knowledge of this convers
 Messages from other sessions arrive as user turns starting with [Mandor: message from \
 session ...]; answer them with send_message, not in your own reply. send_message only reaches \
 a running session: start a suspended or not-running one first with resume_session. \
+suspend_session stops an idle session to free its memory, keeping it resumable. \
 close_session removes sessions that are not running, once the user approves it.";
 
 #[derive(Default)]
@@ -213,6 +214,20 @@ fn tools() -> Value {
             "description": "Start a suspended or not-running Mandor session again with its \
     conversation history, as if the user clicked it in the sidebar, without sending it anything. \
     Returns once it has loaded, so send_message can follow straight away.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "session": { "type": "string", "description": "Session id, or its exact name." }
+                },
+                "required": ["session"]
+            }
+        },
+        {
+            "name": "suspend_session",
+            "description": "Suspend a running Mandor session that has finished its work, to free \
+    its memory, as if the user clicked its suspend button. Its claude stops but the session stays in \
+    the sidebar with its conversation, and resume_session starts it again. Refused while it is \
+    working or waiting on a prompt, and for sessions the user exempted from suspending.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
@@ -400,6 +415,18 @@ mod tests {
     fn every_tool_requires_an_object_schema() {
         for t in tools().as_array().unwrap() {
             assert_eq!(t["inputSchema"]["type"], "object", "{}", t["name"]);
+        }
+    }
+
+    #[test]
+    fn every_tool_has_a_window_handler() {
+        let app_js = include_str!("../../ui/app.js");
+        for t in tools().as_array().unwrap() {
+            let name = t["name"].as_str().unwrap();
+            assert!(
+                app_js.contains(&format!("async {name}(caller")),
+                "no sessionTools.{name} in ui/app.js"
+            );
         }
     }
 }

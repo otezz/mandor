@@ -4009,6 +4009,31 @@ const sessionTools = {
     return `Resumed "${target.name}" with its history; it is ${sessionStatus(target)}.`;
   },
 
+  async suspend_session(caller, a) {
+    const target = findSessionRef(String(a.session || ""));
+    if (target.id === caller) throw new Error("that is your own session");
+    const status = sessionStatus(target);
+    if (!target.live) return `"${target.name}" isn't running (${status}).`;
+    if (target.incognito)
+      throw new Error(
+        `session "${target.name}" is incognito; suspending it would lose it`,
+      );
+    if (target.noSuspend)
+      throw new Error(
+        `the user exempted "${target.name}" from suspending; leave it running`,
+      );
+    if (status === "working")
+      throw new Error(`session "${target.name}" is working; try again later`);
+    // needs-attention is also set by a finished turn the user hasn't seen, so
+    // only refuse when its screen shows one of claude's prompts.
+    if (/Esc to cancel/.test(target.term ? screenText(target.term, 25) : ""))
+      throw new Error(
+        `session "${target.name}" is waiting on a prompt; check it with read_session`,
+      );
+    await suspendSession(target.id);
+    return `Suspended "${target.name}"; resume_session starts it again with its history.`;
+  },
+
   async read_session(caller, a) {
     const target = findSessionRef(String(a.session || ""));
     const lines = Math.min(Math.max(Math.round(Number(a.lines)) || 80, 1), 400);
